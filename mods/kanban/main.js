@@ -1,7 +1,8 @@
 // Kanban for the Herdr app: every agent is a card in a column by status.
-// One mod, two parts chosen by props.part:
-//   "bar"   the top bar: view switch, search, New agent, gear, panel buttons, window buttons.
+// One mod, parts chosen by props.part:
+//   "bar"   the top bar: search, space filter, New agent, gear, panel buttons, window buttons.
 //   "board" the columns with the cards.
+//   "tab-head" the head of the tab panel: the tab, its space and machine, the maximize button.
 //   "panel-title" the title row of a panel dialog (the bar opens it, see openDialog).
 //   "group-menu" the menu of a group button of the panel group, a popup (the bar opens it, see openGroup).
 //   "clone-menu" the menu of the duplicate button of a card, a popup (the board opens it, see openClone).
@@ -33,6 +34,8 @@ const KEY_WAITING = "kanban.waiting"; // "on" | "off"; absent: props.waiting (on
 const KEY_DISMISSED = "kanban.waiting.dismissed"; // { "<terminal>": turn }: cards the person sent back to Done/Idle, for that turn
 const KEY_QUERY = "kanban.query"; // the search text
 const KEY_SCOPE = "kanban.scope"; // "all" | "space"
+const KEY_SCOPE_SPACE = "kanban.scopeSpace"; // the space id the filter keeps, taken when it was turned on
+const KEY_MAXIMIZED = "kanban.maximized"; // px of the tab panel before it was maximized; null: not maximized
 const KEY_WIDTH = "kanban.width"; // widest a column may be, in px; absent: columns share the board
 const KEY_ORDER = "kanban.order"; // ids of the columns, left to right; absent: the order of COLUMNS
 const KEY_DENSITY = "kanban.density"; // "auto" | "compact" | "normal"; absent: auto
@@ -80,8 +83,25 @@ const WAITING = "waiting";
 const statusColor = (t, status) => (status === WAITING ? t.ansi5 || t.accent : t[status] ?? t.idle);
 
 // Left by older versions: a core terminal with this name and the label kanban.shell=1, and a terminal block
-// "shell" in a column "board-main" with the board. The bar removes the block, and the terminal once it has ended (see dropShell, endShell).
+// "shell" in a column "board-main" with the board. The bar removes the block, and the terminal once it has ended (see migrate, endShell).
 const OLD_SHELL = "kanban-shell";
+
+// The tab panel ("detail"): its head (part "tab-head") over the active tab. Older versions had a block
+// { agent: "focused" } here and a stack "view" with a Terminals view; migrate() swaps them for this.
+const DETAIL_PX = 460;
+const TAB_PANEL = [
+  { id: "detail-head", type: "block", content: { mod: "kanban", props: { part: "tab-head" } }, size: { px: 36 } },
+  { id: "detail-tab", type: "block", padding: 8, content: { tab: "active", pane: {
+    header: { content: { mod: "pane" }, reveal: "always", height: 30, position: "top" },
+    background: "background", border: { width: 1, color: "border" }, focus: { width: 1, color: "accent" }, radius: 10, gap: 8, lone: true } } },
+];
+// A tab nobody named is called by its place: "1", "2", ... (spaces() may give "tb<n>").
+const unnamed = (name) => /^(tb)?\d+$/.test(String(name ?? "").trim());
+/** The tab the panel shows: the active tab of the active space. */
+function shownTab() {
+  const space = spaces().find((p) => p.active), tab = space?.tabs.find((x) => x.active) ?? null;
+  return { space, tab, id: tab?.id ?? focused()?.tab ?? null };
+}
 
 // The side panel of the layout (node "panel", stack "panel-body"): Herdr's own Files and Changes mods.
 const PANELS = [
@@ -178,21 +198,21 @@ const STR = {
     waitingOff: "Waiting column off: those agents show as Done or Idle. Click to turn it on.",
     notWaiting: "Not waiting: show it as Done or Idle",
     agents: (n) => (n === 1 ? "1 agent" : `${n} agents`), needYou: "{n} need you",
-    scopeAll: "All spaces", scopeSpace: "This space",
-    scopeAllTip: "Showing every space. Click to show only the current space.",
-    scopeSpaceTip: "Showing only the current space. Click to show every space.",
-    board: "Board", terminals: "Terminals", boardTip: "Show the board", terminalsTip: "Show the terminals of the current space",
-    detailOn: "Hide the terminal panel", detailOff: "Show the terminal panel", agentLabel: "Agent",
+    scopeAllTip: "Showing every space. Click to show only {name}, the space you are in now.",
+    scopeSpaceTip: "Showing only {name}. Click to show every space.",
+    detailOn: "Hide the tab panel", detailOff: "Show the tab panel", agentLabel: "Agent",
+    maximize: "Maximize the panel: hide the board", restore: "Restore the board", menuMaximize: "Open maximized",
+    tabNumber: "Tab {n}", noTab: "No tab open: click a card",
     newAgent: "New agent", hide: "Hide this column", showCol: "Show {name}", hideCol: "Hide {name}",
     emptyCol: "No agents here", emptyColSearch: "No match",
     allHidden: "All columns are hidden", allHiddenHint: "Show a column to see its agents.", showAll: "Show all columns",
     none: "No agents yet", noneHint: "Start an agent with the New agent button. It appears here as a card, and moves between columns when its status changes.",
-    pin: "Pin to the top of its column", unpin: "Unpin", open: "Open in its tab",
+    pin: "Pin to the top of its column", unpin: "Unpin",
     now: "just now", min: "{n} min ago", hour: "{n} h ago", day: "{n} d ago",
     gearTitle: "Settings", gearHerdr: "Herdr settings", gearMods: "PowerMods",
     gearButtons: "Bar buttons", buttonsTitle: "Bar buttons (top of the list = left)", moveUp: "Move up", moveDown: "Move down",
     hideButton: "Hide in the bar", showButton: "Show in the bar", resetButtons: "Reset",
-    newTab: "New tab", settingsTip: "Open the settings", panelTip: "Show or hide {name}",
+    settingsTip: "Open the settings", panelTip: "Show or hide {name}",
     auto: "Auto", widthTip: "Column width: {w}. Use − and + to change it.",
     toAuto: "Set Auto: the columns share the whole board",
     widthAutoTip: "Click the value to go back to Auto.",
@@ -232,21 +252,21 @@ const STR = {
     waitingOff: "Coluna Aguardando desligada: esses agentes aparecem como Concluídos ou Ociosos. Clique para ligar.",
     notWaiting: "Não está esperando: mostrar como Concluído ou Ocioso",
     agents: (n) => (n === 1 ? "1 agente" : `${n} agentes`), needYou: "{n} precisam de você",
-    scopeAll: "Todos os espaços", scopeSpace: "Este espaço",
-    scopeAllTip: "Mostrando todos os espaços. Clique para mostrar só o espaço atual.",
-    scopeSpaceTip: "Mostrando só o espaço atual. Clique para mostrar todos os espaços.",
-    board: "Quadro", terminals: "Terminais", boardTip: "Mostrar o quadro", terminalsTip: "Mostrar os terminais do espaço atual",
-    detailOn: "Ocultar o painel do terminal", detailOff: "Mostrar o painel do terminal", agentLabel: "Agente",
+    scopeAllTip: "Mostrando todos os espaços. Clique para mostrar só {name}, o espaço em que você está.",
+    scopeSpaceTip: "Mostrando só {name}. Clique para mostrar todos os espaços.",
+    detailOn: "Ocultar o painel da aba", detailOff: "Mostrar o painel da aba", agentLabel: "Agente",
+    maximize: "Maximizar o painel: ocultar o quadro", restore: "Restaurar o quadro", menuMaximize: "Abrir maximizado",
+    tabNumber: "Aba {n}", noTab: "Nenhuma aba aberta: clique num cartão",
     newAgent: "Novo agente", hide: "Ocultar esta coluna", showCol: "Mostrar {name}", hideCol: "Ocultar {name}",
     emptyCol: "Nenhum agente aqui", emptyColSearch: "Nada encontrado",
     allHidden: "Todas as colunas estão ocultas", allHiddenHint: "Mostre uma coluna para ver os agentes dela.", showAll: "Mostrar todas as colunas",
     none: "Nenhum agente ainda", noneHint: "Inicie um agente com o botão Novo agente. Ele aparece aqui como um cartão e muda de coluna quando o status muda.",
-    pin: "Fixar no topo da coluna", unpin: "Desafixar", open: "Abrir na aba dele",
+    pin: "Fixar no topo da coluna", unpin: "Desafixar",
     now: "agora", min: "há {n} min", hour: "há {n} h", day: "há {n} d",
     gearTitle: "Configurações", gearHerdr: "Configurações do Herdr", gearMods: "PowerMods",
     gearButtons: "Botões da barra", buttonsTitle: "Botões da barra (topo da lista = esquerda)", moveUp: "Mover para cima",
     moveDown: "Mover para baixo", hideButton: "Ocultar na barra", showButton: "Mostrar na barra", resetButtons: "Restaurar",
-    newTab: "Nova aba", settingsTip: "Abrir as configurações", panelTip: "Mostrar ou ocultar {name}",
+    settingsTip: "Abrir as configurações", panelTip: "Mostrar ou ocultar {name}",
     auto: "Auto", widthTip: "Largura da coluna: {w}. Use − e + para mudar.",
     toAuto: "Voltar para Auto: as colunas dividem o quadro todo",
     widthAutoTip: "Clique no valor para voltar para Auto.",
@@ -339,7 +359,8 @@ export default class Kanban extends View {
     // Read props once and keep them: props() in a later callback can answer for another copy.
     this.props = (given && Object.keys(given).length ? given : props()) || {};
     const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "new-dialog", "gear-menu", "buttons-menu"];
-    this.part = ["bar", ...overlays].includes(this.props.part) ? this.props.part : "board";
+    this.part = ["bar", "tab-head", ...overlays].includes(this.props.part) ? this.props.part : "board";
+    if (this.part === "tab-head") return;
     if (overlays.includes(this.part)) {
       this.overlay = this.props.overlay ?? props()?.overlay;
       if (this.part === "panel-title") this.takeKeys(cx);
@@ -388,13 +409,15 @@ export default class Kanban extends View {
       // "kanban.panel-open" steps where the panels open, as the button does. "kanban.panel-<id>" opens or
       // closes the panel <id> (files, changes, or an id of dock/panels.json), as its button does.
       // "kanban.group-<id>" opens the menu of a group button (kanban.group-git). "kanban.gear" does what the
-      // gear button does. "kanban.buttons" opens the editor of the bar buttons.
+      // gear button does. "kanban.buttons" opens the editor of the bar buttons. "kanban.maximize" maximizes
+      // the tab panel or restores the board.
       cx.spawn(async (cx) => {
         for (;;) {
           const cmd = String(await nextCommand());
           if (cmd === "panel-open") this.stepPanelOpen();
           else if (cmd === "gear") this.openGear();
           else if (cmd === "buttons") this.openButtons();
+          else if (cmd === "maximize") this.toggleMaximize();
           else if (cmd.startsWith("group-")) this.openGroup(cmd.slice(6));
           else if (cmd.startsWith("panel-")) this.togglePanel(cmd.slice(6));
           cx.notify();
@@ -521,7 +544,28 @@ export default class Kanban extends View {
     setShared(KEY_ORDER, order);
   }
 
-  scope() { return shared(KEY_SCOPE) === "space" ? "space" : "all"; }
+  /** "space" while the filter is on and the space it keeps still exists, else "all". */
+  scope() { return shared(KEY_SCOPE) === "space" && this.scopeSpace() ? "space" : "all"; }
+
+  /** The space the filter keeps: the one that was active when it was turned on, so a card click
+   *  that makes another space active does not hide the other cards. */
+  scopeSpace() {
+    let id = shared(KEY_SCOPE_SPACE);
+    // Older versions turned the filter on without a space: keep the one active now.
+    if (id == null && shared(KEY_SCOPE) === "space") {
+      id = spaces().find((p) => p.active)?.id ?? null;
+      if (id) setShared(KEY_SCOPE_SPACE, id);
+    }
+    return spaces().find((p) => p.id === id) ?? null;
+  }
+
+  toggleScope() {
+    if (this.scope() === "space") return setShared(KEY_SCOPE, "all");
+    const space = spaces().find((p) => p.active)?.id;
+    if (!space) return;
+    setShared(KEY_SCOPE_SPACE, space);
+    setShared(KEY_SCOPE, "space");
+  }
 
   /** The widest a column may be (px), or null for Auto. */
   maxWidth() {
@@ -563,8 +607,8 @@ export default class Kanban extends View {
   /** Agents after the scope and the search text. */
   visible() {
     const q = String(shared(KEY_QUERY) ?? "").trim().toLowerCase();
-    const space = spaces().find((p) => p.active)?.id;
-    const scoped = this.withWaiting(this.scope() === "space" ? agents().filter((a) => a.space === space) : agents());
+    const space = this.scope() === "space" ? this.scopeSpace().id : null;
+    const scoped = this.withWaiting(space ? agents().filter((a) => a.space === space) : agents());
     if (!q) return scoped;
     return scoped.filter((a) => {
       const pane = panes().find((p) => p.pane === a.pane);
@@ -572,9 +616,10 @@ export default class Kanban extends View {
     });
   }
 
-  /** The stack child that shows now ("board-view" or "tabs-view"). */
-  view() { return find(layout(), "view")?.active ?? "board-view"; }
   detailHidden() { return Boolean(find(layout(), "detail")?.hidden); }
+
+  /** True while the tab panel takes the place of the board. */
+  maximized() { return Boolean(find(layout(), "board")?.hidden); }
 
   age(ms) {
     if (!ms) return "";
@@ -587,9 +632,50 @@ export default class Kanban extends View {
 
   // ---- actions -------------------------------------------------------------
 
+  /** Shows the tab of `a` in the panel: its space and tab become the active ones (the panel shows the active
+   *  tab), its pane gets the keyboard. Ids go as agents() gives them: remote ones keep their "<machine>/". */
   select(a) {
-    run("agent.focus", { terminal: a.address });
-    if (this.detailHidden()) run("layout.show", { id: "detail" });
+    this.guard(() => Promise.all([run("agent.focus", { terminal: a.address }), ...this.showAgent(a), this.showDetail()]));
+  }
+
+  showAgent(a) {
+    return [run("space.select", { id: a.space }), run("tab.select", { id: a.tab }), run("pane.focus", { terminal: a.address })];
+  }
+
+  showDetail() { return this.detailHidden() ? run("layout.show", { id: "detail" }) : null; }
+
+  /** After agent.next / agent.prev the panel follows: the tab of the new agent becomes active. Only once per
+   *  change of the focused agent, not when its tab shows already, and not when the shown tab changed too (the
+   *  person picked a tab), so it cannot loop or undo their pick. */
+  followAgent() {
+    const id = focused()?.agent ?? null, tab = shownTab().id, last = this.seen;
+    this.seen = { id, tab };
+    if (!last || !id || id === last.id || tab !== last.tab) return;
+    // With no earlier agent, or one that ended, Herdr falls back to some agent: not a pick to follow.
+    if (!last.id || !agents().some((x) => x.address === last.id)) return;
+    const a = agents().find((x) => x.address === id);
+    if (a && a.tab !== tab) this.guard(() => Promise.all(this.showAgent(a)));
+  }
+
+  /** Maximizes the tab panel (the board hides, the panel takes the rest of the row) or restores the board
+   *  with the panel width from before. Layout clicks, not layout.set: Herdr keeps them across restarts. */
+  toggleMaximize() {
+    // The bar keeps the old width in its localStorage (shared() may not outlive a restart; the clicks do).
+    if (this.part !== "bar") return run("kanban.maximize");
+    const root = layout(), detail = find(root, "detail");
+    if (!detail || !find(root, "board")) return;
+    if (this.maximized()) {
+      let px = null;
+      try { px = Number(localStorage.getItem(KEY_MAXIMIZED)) || null; localStorage.removeItem(KEY_MAXIMIZED); } catch {}
+      px = px ?? shared(KEY_MAXIMIZED);
+      setShared(KEY_MAXIMIZED, null);
+      return this.guard(() => Promise.all([run("layout.show", { id: "board" }),
+        run("layout.resize", { id: "detail", px: typeof px === "number" && px > 0 ? px : DETAIL_PX })]));
+    }
+    const px = detail.size?.px ?? DETAIL_PX;
+    try { localStorage.setItem(KEY_MAXIMIZED, String(px)); } catch {}
+    setShared(KEY_MAXIMIZED, px);
+    this.guard(() => Promise.all([run("layout.hide", { id: "board" }), run("layout.resize", { id: "detail", weight: 1 }), this.showDetail()]));
   }
 
   /** Reads dock/panels.json. A missing file is an empty list. A broken file keeps the last good list. */
@@ -701,7 +787,7 @@ export default class Kanban extends View {
   runEntry(entry) {
     if (entry.opens === "tab") {
       showTab(entry.mod, entry.name);
-      run("layout.select", { stack: "view", child: "tabs-view" }); // the tab shows in the Terminals view
+      this.showDetail(); // the tab shows in the tab panel
       return;
     }
     run(entry.run, entry.args ?? {});
@@ -1028,7 +1114,9 @@ export default class Kanban extends View {
       { id: "new", symbol: "plus", label: this.s("menuNewHere"), more: true,
         run: () => this.openNew({ space: a.space, machine: spaces().find((s) => s.id === a.space)?.machine ?? machineOf(a) }) },
       { id: "clone", symbol: "copy", label: this.s("duplicate"), more: true, run: () => this.openClone(a) },
-      { id: "open", symbol: "open", label: this.s("open"), run: () => this.openInTab(a) },
+      // A click on the card shows its tab already; this row shows it on the whole width.
+      { id: "maximize", symbol: "maximize", label: this.s("menuMaximize"),
+        run: () => { this.select(a); if (!this.maximized()) this.toggleMaximize(); } },
       { id: "pin", symbol: "pin", label: this.s(a.pinned ? "unpin" : "pin"), run: () => this.togglePin(a) },
     ];
   }
@@ -1067,7 +1155,7 @@ export default class Kanban extends View {
     const name = String(a.tab_name ?? "").trim();
     openOverlay({
       mod: "kanban", kind: "popup", width: RENAME_W, height: MENU_PAD * 2 + MENU_HEAD + RENAME_ROW + EDIT_FOOT,
-      props: { part: "card-rename", lang: this.lang, tab: a.tab, name: /^\d+$/.test(name) ? "" : name, space: a.space_name ?? "" },
+      props: { part: "card-rename", lang: this.lang, tab: a.tab, name: unnamed(name) ? "" : name, space: a.space_name ?? "" },
     });
   }
 
@@ -1258,7 +1346,7 @@ export default class Kanban extends View {
     const tab = this.props.tab;
     if (tab?.mod) {
       showTab(tab.mod, tab.name);
-      if (find(layout(), "view")) run("layout.select", { stack: "view", child: "tabs-view" }); // the Terminals view of the Kanban layout
+      if (find(layout(), "detail")) this.showDetail(); // the tab panel of the Kanban layout
       return;
     }
     const panel = sidePanel(layout());
@@ -1275,28 +1363,35 @@ export default class Kanban extends View {
     if (open?.id && open.id === this.overlay) setShared(KEY_PANEL_DIALOG, null);
   }
 
-  openInTab(a) {
-    run("space.select", { id: a.space });
-    run("tab.select", { id: a.tab });
-    run("pane.focus", { terminal: a.address });
-    run("layout.select", { stack: "view", child: "tabs-view" });
-  }
+  // ---- what older versions left in the layout ----------------------------------
 
-  // ---- the shell of older versions ---------------------------------------------
-
-  /** Takes the shell block of older versions out of the layout, and unwraps its "board-main" column.
-   *  One attempt per layout; true when it ran layout.set. */
-  dropShell(root) {
-    if (!find(root, "shell")?.content?.terminal) return false;
+  /** Brings a layout of an older version up to date in one layout.set: takes out the shell block (and
+   *  unwraps its "board-main" column), drops the Terminals view (unwraps the stack "view" and its
+   *  "board-view" row when the stack holds nothing else) and turns the agent block "detail" into the tab panel. One attempt per layout;
+   *  true when it ran layout.set. */
+  migrate(root) {
+    const shell = (c) => c.id === "shell" && c.content?.terminal;
+    // A stack "view" with children of the person's own stays a stack; only the Terminals view leaves it.
+    const view = (n) => n.id === "view" && n.type === "stack" && (n.children ?? []).every((c) => c.id === "board-view" || c.id === "tabs-view");
+    const old = (n) => shell(n) || n.id === "tabs-view" || view(n) || (n.id === "detail" && n.content?.agent)
+      || (n.children ?? []).some(old);
+    if (!root || !old(root)) return false;
     const name = shared("layout");
-    if (this.shellTry === name) return false;
-    this.shellTry = name;
-    const strip = (node) => {
-      if (!Array.isArray(node?.children)) return node;
-      node.children = node.children.filter((c) => !(c.id === "shell" && c.content?.terminal)).map(strip);
+    if (this.migrateTry === name) return false;
+    this.migrateTry = name;
+    const fix = (node) => {
+      if (node.id === "detail" && node.content?.agent) {
+        const { content, ...rest } = node;
+        return { ...rest, type: "column", resizable: false, children: JSON.parse(JSON.stringify(TAB_PANEL)) };
+      }
+      if (!Array.isArray(node.children)) return node;
+      node.children = node.children
+        .flatMap((c) => (view(c) ? (c.children ?? []).flatMap((v) => (v.id === "board-view" ? v.children ?? [] : [v])) : [c]))
+        .filter((c) => !shell(c) && c.id !== "tabs-view").map(fix);
+      if (node.type === "stack" && node.active === "tabs-view") node.active = node.children[0]?.id;
       return node.id === "board-main" && node.children.length === 1 ? node.children[0] : node;
     };
-    try { run("layout.set", { layout: strip(JSON.parse(JSON.stringify(root))) }); } catch (e) { console.log(`kanban: dropShell: ${e?.message ?? e}`); }
+    try { run("layout.set", { layout: fix(JSON.parse(JSON.stringify(root))) }); } catch (e) { console.log(`kanban: migrate: ${e?.message ?? e}`); }
     return true;
   }
 
@@ -1340,11 +1435,11 @@ export default class Kanban extends View {
 
   /** A card of 2 lines: the program icon, the space and the status mark, then the title, with no
    *  age so the title has room. The icon tells the program, so the space names the card. While the
-   *  pointer is on the card, the pin and open buttons show at the end of the title line. */
+   *  pointer is on the card, its buttons show at the end of the title line. */
   summaryCard(a, t) {
     const color = statusColor(t, a.status);
     const pane = panes().find((p) => p.pane === a.pane);
-    const selected = a.focused || focused()?.agent === a.address;
+    const selected = a.tab === this.shown;
     const hot = a.status === "blocked";
     const name = a.program?.name || a.app || "Agent";
     const { text: title } = this.cardTitle(a, name);
@@ -1380,15 +1475,14 @@ export default class Kanban extends View {
           .when(Boolean(a.wait), (e) => e.child(small("notwait", "check", () => this.dismissWaiting(a), this.s("notWaiting"))))
           .when(this.namer && !offMods().has("tab-namer"), (e) => e.child(small("rename", "pencil", () => this.openNamer(a), this.s("rename"))))
           .child(small("clone", "copy", () => this.openClone(a), this.s("duplicate")))
-          .child(small("pin", "pin", () => this.togglePin(a), this.s(a.pinned ? "unpin" : "pin"), a.pinned))
-          .child(small("open", "open", () => this.openInTab(a), this.s("open")))));
+          .child(small("pin", "pin", () => this.togglePin(a), this.s(a.pinned ? "unpin" : "pin"), a.pinned))));
   }
 
   /** The title of a card: the name of its tab when a person named the tab (not a number, not the
    *  program name that the launcher gives), else the agent's own title. `named` tells which. */
   cardTitle(a, programName) {
     const tabName = String(a.tab_name ?? "").trim();
-    const named = Boolean(tabName) && !/^\d+$/.test(tabName) && tabName !== programName;
+    const named = Boolean(tabName) && !unnamed(tabName) && tabName !== programName;
     return named ? { text: tabName, named, agentTitle: (a.title || "").trim() } : { text: (a.title || "").trim(), named };
   }
 
@@ -1414,7 +1508,7 @@ export default class Kanban extends View {
     const pane = panes().find((p) => p.pane === a.pane);
     const tab = spaces().find((p) => p.id === a.space)?.tabs.find((x) => x.id === a.tab);
     const since = a.status === "working" ? tab?.working_since ?? tab?.changed_at : tab?.changed_at;
-    const selected = a.focused || focused()?.agent === a.address;
+    const selected = a.tab === this.shown;
     const hot = a.status === "blocked";
     const name = a.program?.name || a.app || "Agent";
     // A tab that a person named gives the card its title (the agent's own title goes to the tooltip).
@@ -1459,9 +1553,7 @@ export default class Kanban extends View {
         .child(iconButton(t, `clone-${a.address}`, "copy", () => this.openClone(a),
           { tooltip: this.s("duplicate"), size: 22, glyph: 12, color: t.dim }))
         .child(iconButton(t, `pin-${a.address}`, "pin", () => this.togglePin(a),
-          { active: a.pinned, tooltip: this.s(a.pinned ? "unpin" : "pin"), size: 22, glyph: 12, color: a.pinned ? t.accent : t.dim }))
-        .child(iconButton(t, `open-${a.address}`, "open", () => this.openInTab(a),
-          { tooltip: this.s("open"), size: 22, glyph: 12, color: t.dim })));
+          { active: a.pinned, tooltip: this.s(a.pinned ? "unpin" : "pin"), size: 22, glyph: 12, color: a.pinned ? t.accent : t.dim })));
   }
 
   /** An arrow in a column header that moves the column one place left (-1) or right (+1). Dim at the edge. */
@@ -1532,6 +1624,7 @@ export default class Kanban extends View {
         button(t, "kb-new", this.s("newAgent"), () => this.openNew(), { primary: true, symbol: "plus" }));
     }
     const shown = this.visible();
+    this.shown = shownTab().id; // the cards of the tab in the panel show as selected
     const byStatus = (id) => shown.filter((a) => a.status === id)
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.seq - a.seq);
     const cols = this.columns().filter((c) => !hidden.has(c.id));
@@ -1568,34 +1661,13 @@ export default class Kanban extends View {
 
   // ---- the top bar -------------------------------------------------------------
 
-  tabStrip(t) {
-    const space = spaces().find((p) => p.active);
-    const pills = (space?.tabs ?? []).map((tab) => {
-      const program = panes().find((p) => p.tab === tab.id && p.program?.agent)?.program ?? panes().find((p) => p.tab === tab.id)?.program;
-      const name = /^tb\d+$/.test(tab.name) ? program?.name ?? "Terminal" : tab.name;
-      return h_flex().id(`kb-tab-${tab.id}`).h(28).px(10).gap(7).flex_none().items_center().rounded(8).text_size(12).cursor_pointer()
-        .border_1().border_color(tab.active ? t.border : t.chrome).bg(tab.active ? t.raised : t.chrome)
-        .text_color(tab.active ? t.foreground : t.muted).hover((s) => s.bg(t.hover))
-        .on_mouse_down("left", stop)
-        .on_click(() => run("tab.select", { id: tab.id }))
-        .when(Boolean(program?.icon), (e) => e.child(program.tint ? svg(program.icon).size(13).text_color(t.muted) : image(program.icon).size(13)))
-        .child(div().max_w(160).truncate().child(name))
-        .when(tab.status === "working", (e) => e.child(svg(icon("spinner")).size(11).flex_none().text_color(t.working).spin(900)))
-        .when(tab.status === "blocked" || tab.status === "done", (e) => e.child(div().size(6).rounded(3).bg(t[tab.status])));
-    });
-    return h_flex().id("kb-tabs").flex_1().min_w(0).h_full().gap(4).items_center().overflow_x_scrollbar()
-      .when(Boolean(space?.machine), (e) => e.child(machineChip(t, "kb-machine", space.machine, { height: 24, text: 11.5 })))
-      .children(pills)
-      .child(iconButton(t, "kb-tab-new", "plus", () => run("tab.new"), { tooltip: this.s("newTab"), size: 26, glyph: 13 }));
-  }
-
   /** The buttons of the side panel and of dock/panels.json: Files and Changes, then the entries of the file
    *  in the order listed (side panels and tabs), then its commands but layout.switch. Empty when the layout has
    *  no `panel-body`. `iconOnly`: the names go to the tooltips. Call it once per render: it also edits the layout. */
   panelItems(t, iconOnly = false) {
     const root = layout(), panel = sidePanel(root), body = find(root, "panel-body");
-    // One layout edit for each render: the old shell first, then the panel edit, then the off mods.
-    const dropping = this.dropShell(root);
+    // One layout edit for each render: what older versions left first, then the panel edit, then the off mods.
+    const dropping = this.migrate(root);
     if (!panel || !body) return [];
     // The entries that may use the panel stack: not the id of any other node of the layout.
     const taken = ids(root);
@@ -1641,11 +1713,47 @@ export default class Kanban extends View {
     ];
   }
 
-  /** Shows or hides the terminal of the selected agent, at the right of the board. */
+  /** Shows or hides the tab panel at the right of the board. Hiding a maximized panel brings the board back first. */
   detailButton(t, iconOnly) {
     const detail = this.detailHidden();
-    return panelButton(t, "kb-detail", icon("panel"), this.s("agentLabel"), !detail, () => run("layout.toggle", { id: "detail" }),
-      this.s(detail ? "detailOff" : "detailOn"), iconOnly);
+    return panelButton(t, "kb-detail", icon("panel"), this.s("agentLabel"), !detail, () => {
+      if (!detail && this.maximized()) this.toggleMaximize();
+      run("layout.toggle", { id: "detail" });
+    }, this.s(detail ? "detailOff" : "detailOn"), iconOnly);
+  }
+
+  /** The funnel: only the cards of one space. */
+  scopeButton(t) {
+    const on = this.scope() === "space", space = on ? this.scopeSpace() : spaces().find((p) => p.active);
+    const name = space?.name || base(space?.folder) || "";
+    return iconButton(t, "kb-scope", "filter", () => this.toggleScope(),
+      { active: on, size: 32, tooltip: this.s(on ? "scopeSpaceTip" : "scopeAllTip", { name }) });
+  }
+
+  /** The head of the tab panel: the tab name, its space and its machine, and the maximize button. */
+  tabHead(t) {
+    const { space, tab, id } = shownTab();
+    const max = this.maximized();
+    const toggle = iconButton(t, "kb-head-max", max ? "minimize" : "maximize", () => this.toggleMaximize(),
+      { active: max, size: 26, glyph: 14, tooltip: this.s(max ? "restore" : "maximize") });
+    const row = h_flex().id("kb-head").size_full().min_w(0).pl(14).pr(5).gap(8).items_center().bg(t.chrome).border_b(1).border_color(t.border);
+    if (!space || !id) {
+      return row.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.s("noTab"))).child(toggle);
+    }
+    // agents() has the name the cards use; a tab with no agent has only its spaces() entry.
+    const raw = String(agents().find((a) => a.tab === id)?.tab_name ?? tab?.name ?? "").trim();
+    const place = (space.tabs ?? []).findIndex((x) => x.id === id) + 1;
+    const name = raw && !unnamed(raw) ? raw : this.s("tabNumber", { n: place || raw || id });
+    const dot = () => div().flex_none().text_size(12).text_color(t.dim).child("·");
+    return row
+      .child(div().flex_shrink(1).min_w(0).max_w(260).truncate().text_size(13).font_semibold().text_color(t.foreground).child(name))
+      .child(dot())
+      .child(div().flex_shrink(1).min_w(0).truncate().text_size(12).text_color(t.muted).child(space.name || base(space.folder) || space.id))
+      .child(dot())
+      .child(space.machine ? machineChip(t, "kb-head-machine", space.machine)
+        : div().flex_none().text_size(12).text_color(t.dim).child(this.s("thisComputer")))
+      .child(div().flex_1())
+      .child(toggle);
   }
 
   /** The value in the width control. With a width set, it is a button that sets Auto again. */
@@ -1682,22 +1790,20 @@ export default class Kanban extends View {
   }
 
   bar(t) {
+    this.followAgent(); // the bar shows in both modes, the board not while the panel is maximized
     const all = agents();
     const need = all.filter((a) => a.status === "blocked").length;
-    const view = this.view();
     const w = window();
     const wbtn = (id, glyph, action) => div().id(id).size(28).flex_none().flex().items_center().justify_center().rounded(7)
       .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
       .on_click(action).child(glyph);
     const win = w?.platform === "windows";
-    const onBoard = view !== "tabs-view";
     const compact = this.compact(this.barW, BAR_WIDE);
     const count = need ? `${this.s("agents", all.length)} · ${this.s("needYou", { n: need })}` : this.s("agents", all.length);
 
-    // The bar reads left to right: what to see (Board / Terminals) | what to show (search, scope, the agent
-    // terminal) | Settings (the gear menu has the look of the board and the columns) | New agent | the panel
-    // group (Files, Changes, dock entries) and the window buttons. The panel buttons: names in Normal density,
-    // icons in Compact; in Auto, names from LABELS_WIDE px.
+    // The bar reads left to right: what to show (search, scope, the tab panel) | Settings (the gear menu has the
+    // look of the board and the columns) | New agent | the panel group (Files, Changes, dock entries) and the
+    // window buttons. The panel buttons: names in Normal density, icons in Compact; in Auto, names from LABELS_WIDE px.
     const d = this.density();
     const iconOnly = d === "normal" ? false : d === "compact" ? true : !(this.barW >= LABELS_WIDE);
     const panels = this.panelItems(t, iconOnly); // once per render: it also edits the layout
@@ -1715,10 +1821,9 @@ export default class Kanban extends View {
         width: compact ? 150 : 220,
         onClear: () => { this.query.set_value(""); setShared(KEY_QUERY, ""); },
       }))
-      .child(iconButton(t, "kb-scope", "filter", () => setShared(KEY_SCOPE, this.scope() === "space" ? "all" : "space"),
-        { active: this.scope() === "space", size: 32, tooltip: this.s(this.scope() === "space" ? "scopeSpaceTip" : "scopeAllTip") }));
-    // The controls of the board view share one row that scrolls sideways when the bar is too narrow (Normal
-    // density on a small monitor). New agent and the right end stay outside it, so they always show.
+      .child(this.scopeButton(t));
+    // The search, the filter and the Agent button share one row that scrolls sideways when the bar is too narrow
+    // (Normal density on a small monitor). New agent and the right end stay outside it, so they always show.
     const scroller = (children) => h_flex().id("kb-strip").flex_1().min_w(0).gap(compact ? 6 : 10).items_center().overflow_x_scrollbar().children(children);
 
     // With the sidebar hidden, the macOS window buttons sit over the start of the bar: leave them room.
@@ -1735,15 +1840,8 @@ export default class Kanban extends View {
       .when(!compact, (e) => e.child(v_flex().flex_none()
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child(this.s("title")))
         .child(div().text_size(11).text_color(need ? t.blocked : t.dim).child(count))))
-      .child(segmented(t, [
-        { id: "kb-view-board", label: compact ? "" : this.s("board"), symbol: "board", active: onBoard, tooltip: this.s("boardTip"),
-          onClick: () => run("layout.select", { stack: "view", child: "board-view" }) },
-        { id: "kb-view-tabs", label: compact ? "" : this.s("terminals"), symbol: "terminal", active: !onBoard, tooltip: this.s("terminalsTip"),
-          onClick: () => run("layout.select", { stack: "view", child: "tabs-view" }) },
-      ]))
       .child(divider(t))
-      .when(onBoard, (e) => e.child(scroller([search, buttonGroup(t, [this.detailButton(t, iconOnly)])])))
-      .when(!onBoard, (e) => e.child(this.tabStrip(t)))
+      .child(scroller([search, buttonGroup(t, [this.detailButton(t, iconOnly)])]))
       .child(settingsButton)
       .child(divider(t))
       .child(newAgent)
@@ -1760,6 +1858,7 @@ export default class Kanban extends View {
     if (this.part === "new-dialog") return this.newDialog(t);
     if (this.part === "gear-menu") return this.gearMenu(t);
     if (this.part === "buttons-menu") return this.buttonsMenu(t);
+    if (this.part === "tab-head") return this.tabHead(t);
     this.syncWaiting(cx);
     if (this.part === "bar") return this.bar(t);
     return v_flex().id("kanban").size_full().min_h(0).min_w(0).text_color(t.foreground).text_size(13)
