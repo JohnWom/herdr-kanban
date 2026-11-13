@@ -5,6 +5,8 @@
 //   "panel-title" the title row of a panel dialog (the bar opens it, see openDialog).
 //   "group-menu" the menu of a group button of the panel group, a popup (the bar opens it, see openGroup).
 //   "clone-menu" the menu of the duplicate button of a card, a popup (the board opens it, see openClone).
+//   "card-menu" the right-click menu of a card, a popup (the board opens it, see openCardMenu).
+//   "card-rename" the field that renames the tab of a card, a popup (the card menu opens it, see openRename).
 //   "gear-menu" the menu of the gear button: the look of the board, the columns, Herdr's settings, Bar buttons and PowerMods,
 //               a popup (the bar opens it, see openGear).
 //   "buttons-menu" the editor of the order and the visibility of the panel buttons, a popup (the bar opens it, see openButtons).
@@ -14,7 +16,7 @@ import { v_flex, h_flex, InputState } from "gpui-base";
 import { agents, spaces, panes, focused, layout, window, theme, props, shared, setShared, run, openOverlay, closeOverlay,
   setAgentOrder, appHome, home, terminals, readTextFile, watchFolder, notify, nextCommand, hc, knownAgents, exec } from "herdr";
 import * as fs from "fs/promises";
-import { icon, tint, iconButton, columnChip, segmented, searchBox, pill, button, panelButton, panelGlyph, buttonGroup, divider, stop, machineChip, remoteColor } from "./ui.js";
+import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pill, button, panelButton, panelGlyph, buttonGroup, divider, stop, machineChip, remoteColor } from "./ui.js";
 
 /** The machine of an agent on another computer: its address is "<machine>/<terminal>". */
 const machineOf = (a) => (String(a?.address ?? "").includes("/") ? a.address.split("/")[0] : null);
@@ -87,6 +89,8 @@ const PANELS = [
 const PANEL_GROUPS = { git: { label: "Git", icon: icon("git") } };
 const MENU_W = 220, MENU_PAD = 5, MENU_HEAD = 26, MENU_ROW = 32; // px: the menu of a group button
 const CLONE_W = 270; // px: the menu of the duplicate button of a card
+const CARD_MENU_W = 250; // px: the right-click menu of a card
+const RENAME_W = 300, RENAME_ROW = 40; // px: the rename popup (its width and its field row)
 const EDIT_W = 280, EDIT_FOOT = 38; // px: the editor of the bar buttons (its width and its Reset row)
 const GEAR_W = 340, GEAR_ROW = 38, GEAR_HINT = 22, GEAR_SEP = 9; // px: the gear menu (a row with a control, the order hint, the line)
 
@@ -198,6 +202,10 @@ const STR = {
     toSide: "Open in the side panel", toTab: "Open in a tab", closeDialog: "Close",
     rename: "Rename the tab", duplicate: "Duplicate this agent", cloneHere: "Duplicate in this space", cloneWorktree: "Duplicate in a new worktree…",
     cloneTitle: "Duplicate {name}", cloneFail: "Kanban: duplicate", noCommand: "The command of this agent is not known.",
+    menuRename: "Rename the tab…", menuClose: "Close the tab", menuCloseWith: "Close the tab ({what})",
+    menuCloseTip: "Closes every pane of the tab. Herdr asks first when it is the last tab of its space.",
+    panes: (n) => (n === 1 ? "1 pane" : `${n} panes`), cardFail: "Kanban: the command failed",
+    renameTitle: "Rename the tab", renameEmpty: "Empty: its number again", cancel: "Cancel", save: "Save",
   },
   pt: {
     title: "Agentes", search: "Buscar agentes…",
@@ -240,6 +248,10 @@ const STR = {
     toSide: "Abrir no painel lateral", toTab: "Abrir numa aba", closeDialog: "Fechar",
     rename: "Renomear a tab", duplicate: "Duplicar este agente", cloneHere: "Duplicar neste espaço", cloneWorktree: "Duplicar num novo worktree…",
     cloneTitle: "Duplicar {name}", cloneFail: "Kanban: duplicar", noCommand: "O comando deste agente não é conhecido.",
+    menuRename: "Renomear a aba…", menuClose: "Fechar a aba", menuCloseWith: "Fechar a aba ({what})",
+    menuCloseTip: "Fecha todos os painéis da aba. O Herdr pergunta antes quando é a última aba do espaço.",
+    panes: (n) => (n === 1 ? "1 painel" : `${n} painéis`), cardFail: "Kanban: o comando falhou",
+    renameTitle: "Renomear a aba", renameEmpty: "Vazio: volta ao número", cancel: "Cancelar", save: "Salvar",
   },
 };
 
@@ -302,10 +314,12 @@ export default class Kanban extends View {
   init(given, cx) {
     // Read props once and keep them: props() in a later callback can answer for another copy.
     this.props = (given && Object.keys(given).length ? given : props()) || {};
-    this.part = ["bar", "panel-title", "group-menu", "clone-menu", "gear-menu", "buttons-menu"].includes(this.props.part) ? this.props.part : "board";
-    if (["panel-title", "group-menu", "clone-menu", "gear-menu", "buttons-menu"].includes(this.part)) {
+    const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "gear-menu", "buttons-menu"];
+    this.part = ["bar", ...overlays].includes(this.props.part) ? this.props.part : "board";
+    if (overlays.includes(this.part)) {
       this.overlay = this.props.overlay ?? props()?.overlay;
       if (this.part === "panel-title") this.takeKeys(cx);
+      if (this.part === "card-rename") this.takeName(cx);
       return;
     }
     // Which Claude Code agents wait for subagents. Both parts run one: they count the cards too.
@@ -968,6 +982,96 @@ export default class Kanban extends View {
     });
   }
 
+  /** Opens the right-click menu of a card at the pointer. */
+  openCardMenu(a) {
+    openOverlay({
+      mod: "kanban", kind: "popup", width: CARD_MENU_W, height: MENU_PAD * 2 + MENU_HEAD + this.cardMenuItems(a).length * MENU_ROW,
+      props: { part: "card-menu", lang: this.lang, address: a.address },
+    });
+  }
+
+  /** The rows of the card menu. The board builds them for the height, the popup to draw them. */
+  cardMenuItems(a) {
+    const agentsIn = agents().filter((x) => x.tab === a.tab).length, panesIn = panes().filter((p) => p.tab === a.tab).length;
+    const what = agentsIn > 1 ? this.s("agents", agentsIn) : panesIn > 1 ? this.s("panes", panesIn) : null;
+    return [
+      { id: "rename", symbol: "pencil", label: this.s("menuRename"), run: () => this.openRename(a) },
+      // No `confirmed`: Herdr asks before the last tab closes its space.
+      { id: "close", symbol: "close", label: what ? this.s("menuCloseWith", { what }) : this.s("menuClose"), tip: this.s("menuCloseTip"),
+        run: () => run("tab.close", { id: a.tab }) },
+      { id: "clone", symbol: "copy", label: this.s("duplicate"), more: true, run: () => this.openClone(a) },
+      { id: "open", symbol: "open", label: this.s("open"), run: () => this.openInTab(a) },
+      { id: "pin", symbol: "pin", label: this.s(a.pinned ? "unpin" : "pin"), run: () => this.togglePin(a) },
+    ];
+  }
+
+  /** The card menu: the space and the tab of the agent, then its rows. A row acts, then closes the menu. */
+  cardMenu(t) {
+    const a = agents().find((x) => x.address === this.props.address);
+    if (!a) { this.closeDialog(); return v_flex().id("kb-card-root"); }
+    const row = (it) => h_flex().id(`kb-card-${it.id}`).w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6)
+      .cursor_pointer().text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover))
+      .when(Boolean(it.tip), (e) => e.tooltip(it.tip))
+      // Act first, then close: this copy ends with its popup, and closeOverlay(id) spares a popup it just opened.
+      .on_click((_e, cx) => { cx.stop_propagation(); this.guard(it.run, () => this.closeDialog()); })
+      .child(svg(icon(it.symbol)).size(15).flex_none().text_color(t.muted))
+      .child(div().flex_1().min_w(0).truncate().child(it.label))
+      .when(Boolean(it.more), (e) => e.child(svg(icon("chevron-right")).size(12).flex_none().text_color(t.dim)));
+    return v_flex().id("kb-card-root").w_full().p(MENU_PAD)
+      .child(h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim)
+        .child(div().flex_1().min_w(0).truncate().child([a.space_name, a.tab_name].filter(Boolean).join(" · "))))
+      .children(this.cardMenuItems(a).map(row));
+  }
+
+  /** Runs `fn`, then `done` once it settles; a command that fails (its machine is unavailable) shows a notice, not an error. */
+  guard(fn, done = () => {}) {
+    const fail = (e) => notify({ title: this.s("cardFail"), body: String(e?.message ?? e), level: "error", timeout: 6000 });
+    let p;
+    try { p = fn(); } catch (e) { fail(e); done(); return; }
+    if (typeof p?.then === "function") Promise.resolve(p).catch(fail).finally(done);
+    else done();
+  }
+
+  togglePin(a) { return run("terminal.pin", { terminal: a.address, pinned: !a.pinned }); }
+
+  /** Opens the field that renames the tab of `a`, filled with its name (empty while the tab has only its number). */
+  openRename(a) {
+    const name = String(a.tab_name ?? "").trim();
+    openOverlay({
+      mod: "kanban", kind: "popup", width: RENAME_W, height: MENU_PAD * 2 + MENU_HEAD + RENAME_ROW + EDIT_FOOT,
+      props: { part: "card-rename", lang: this.lang, tab: a.tab, name: /^\d+$/.test(name) ? "" : name, space: a.space_name ?? "" },
+    });
+  }
+
+  // The field takes the keyboard at once and again after 40 ms, as the tab-namer does.
+  takeName(cx) {
+    this.nameField = InputState.new({ placeholder: this.s("renameEmpty"), value: String(this.props.name ?? "") });
+    this.nameField.on("submit", () => this.saveName());
+    this.nameField.focus();
+    cx.timer.after(40, () => this.nameField.focus());
+  }
+
+  /** Renames the tab of the rename popup; an empty name gives it its number again. */
+  saveName() {
+    const tab = this.props.tab, name = this.nameField.value().trim();
+    this.guard(() => run("tab.rename", { id: tab, name }), () => this.closeDialog());
+  }
+
+  /** The rename popup: a head, the field, Cancel and Save. Enter saves, Esc cancels. */
+  renameBox(t) {
+    const tab = this.props.tab;
+    // Close once the tab is gone: no agent and no pane left in it (an agent can exit while its tab stays).
+    if (!agents().some((x) => x.tab === tab) && !panes().some((p) => p.tab === tab)) { this.closeDialog(); return v_flex().id("kb-rn-root"); }
+    return v_flex().id("kb-rn-root").w_full().p(MENU_PAD)
+      .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); this.closeDialog(); } })
+      .child(h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim)
+        .child(div().flex_1().min_w(0).truncate().child([this.s("renameTitle"), this.props.space].filter(Boolean).join(" · "))))
+      .child(h_flex().w_full().h(RENAME_ROW).px(4).flex_none().items_center().child(textField(t, "kb-rn-field", this.nameField)))
+      .child(h_flex().w_full().h(EDIT_FOOT).px(4).pt(6).gap(6).flex_none().items_center().justify_end()
+        .child(button(t, "kb-rn-cancel", this.s("cancel"), () => this.closeDialog()))
+        .child(button(t, "kb-rn-save", this.s("save"), () => this.saveName(), { primary: true })));
+  }
+
   dialogToSide() {
     this.closeDialog();
     const tab = this.props.tab;
@@ -1084,6 +1188,7 @@ export default class Kanban extends View {
         if (next !== this.hoverCard) { this.hoverCard = next; cx.notify(); }
       })
       .on_click(() => this.select(a))
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openCardMenu(a); })
       .child(h_flex().gap(7).items_center()
         .child(this.glyph(a, t, true).size(20).rounded(6))
         .child(div().flex_1().min_w(0).truncate().text_size(13).font_bold().text_color(t.foreground).child(head))
@@ -1096,7 +1201,7 @@ export default class Kanban extends View {
           .when(Boolean(a.wait), (e) => e.child(small("notwait", "check", () => this.dismissWaiting(a), this.s("notWaiting"))))
           .when(this.namer && !offMods().has("tab-namer"), (e) => e.child(small("rename", "pencil", () => this.openNamer(a), this.s("rename"))))
           .child(small("clone", "copy", () => this.openClone(a), this.s("duplicate")))
-          .child(small("pin", "pin", () => run("terminal.pin", { terminal: a.address, pinned: !a.pinned }), this.s(a.pinned ? "unpin" : "pin"), a.pinned))
+          .child(small("pin", "pin", () => this.togglePin(a), this.s(a.pinned ? "unpin" : "pin"), a.pinned))
           .child(small("open", "open", () => this.openInTab(a), this.s("open")))));
   }
 
@@ -1145,6 +1250,7 @@ export default class Kanban extends View {
       .when(selected || hot, (e) => e.shadow_md())
       .hover((s) => s.bg(t.raised))
       .on_click(() => this.select(a))
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openCardMenu(a); })
       .when(a.status === "working", (e) => e.child(
         div().h(2).w_full().rounded(1).bg(color).loop("opacity", { from: 0.2, to: 1, period: 1400 })))
       .child(h_flex().gap(compact ? 7 : 9).items_center()
@@ -1173,7 +1279,7 @@ export default class Kanban extends View {
           { tooltip: this.s("rename"), size: 22, glyph: 12, color: t.dim })))
         .child(iconButton(t, `clone-${a.address}`, "copy", () => this.openClone(a),
           { tooltip: this.s("duplicate"), size: 22, glyph: 12, color: t.dim }))
-        .child(iconButton(t, `pin-${a.address}`, "pin", () => run("terminal.pin", { terminal: a.address, pinned: !a.pinned }),
+        .child(iconButton(t, `pin-${a.address}`, "pin", () => this.togglePin(a),
           { active: a.pinned, tooltip: this.s(a.pinned ? "unpin" : "pin"), size: 22, glyph: 12, color: a.pinned ? t.accent : t.dim }))
         .child(iconButton(t, `open-${a.address}`, "open", () => this.openInTab(a),
           { tooltip: this.s("open"), size: 22, glyph: 12, color: t.dim })));
@@ -1470,6 +1576,8 @@ export default class Kanban extends View {
     if (this.part === "panel-title") return this.panelTitle(t);
     if (this.part === "group-menu") return this.groupMenu(t);
     if (this.part === "clone-menu") return this.cloneMenu(t);
+    if (this.part === "card-menu") return this.cardMenu(t);
+    if (this.part === "card-rename") return this.renameBox(t);
     if (this.part === "gear-menu") return this.gearMenu(t);
     if (this.part === "buttons-menu") return this.buttonsMenu(t);
     this.syncWaiting(cx);
