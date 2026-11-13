@@ -1,16 +1,17 @@
 // Kanban for the Herdr app: every agent is a card in a column by status.
 // One mod, two parts chosen by props.part:
-//   "bar"   the top bar: search, column toggles, view switch, window buttons.
+//   "bar"   the top bar: view switch, search, New agent, gear, panel buttons, window buttons.
 //   "board" the columns with the cards.
 //   "panel-title" the title row of a panel dialog (the bar opens it, see openDialog).
 //   "group-menu" the menu of a group button of the panel group, a popup (the bar opens it, see openGroup).
 //   "clone-menu" the menu of the duplicate button of a card, a popup (the board opens it, see openClone).
-//   "gear-menu" the menu of the gear button: Herdr's settings, Bar buttons or PowerMods, a popup (the bar opens it, see openGear).
+//   "gear-menu" the menu of the gear button: the look of the board, the columns, Herdr's settings, Bar buttons and PowerMods,
+//               a popup (the bar opens it, see openGear).
 //   "buttons-menu" the editor of the order and the visibility of the panel buttons, a popup (the bar opens it, see openButtons).
 // The parts share their state through shared(): hidden columns, search text, scope.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState } from "gpui-base";
-import { agents, spaces, panes, focused, layout, layouts, window, theme, props, shared, setShared, run, openOverlay, closeOverlay,
+import { agents, spaces, panes, focused, layout, window, theme, props, shared, setShared, run, openOverlay, closeOverlay,
   setAgentOrder, appHome, home, terminals, readTextFile, watchFolder, notify, nextCommand, hc, knownAgents, exec } from "herdr";
 import * as fs from "fs/promises";
 import { icon, tint, iconButton, columnChip, segmented, searchBox, pill, button, panelButton, panelGlyph, buttonGroup, divider, stop, machineChip, remoteColor } from "./ui.js";
@@ -54,19 +55,15 @@ const MIN_COLUMN = 150; // narrowest a column may be before the board scrolls
 const MIN_COLUMN_COMPACT = 120; // the same, in compact density
 const GAP = 12, GAP_COMPACT = 8; // between the columns
 
-// Density. The button in the bar goes auto -> compact -> normal -> auto.
-// Auto makes each part compact by its own width (on_size_change, the same px as .w()):
+// Density, set in the gear menu. Auto makes each part compact by its own width (on_size_change, the same px as .w()):
 // the bar below BAR_WIDE, the board below COLUMN_WIDE for each visible column.
-// The density is shared with the Dock bar (tabs-dock): it has the same button and reads the same key.
+// The density is shared with the Dock bar (tabs-dock), which reads the same key.
 const DENSITIES = ["auto", "compact", "normal"];
-// Card view. The button in the bar goes auto -> summary -> full -> auto.
+// Card view, set in the gear menu.
 const CARD_VIEWS = ["auto", "summary", "full"];
 const BAR_WIDE = 1800;
 const LABELS_WIDE = 2250; // from this bar width the panel buttons show their names, not only icons
 const COLUMN_WIDE = 220;
-// The right end of the bar: the same values as in tabs-dock, so it does not move when the layout changes.
-const BAR_RIGHT = 10; // padding after the window buttons
-const RIGHT_GAP = 6; // between the panel group, the layout switch and the window buttons
 // In compact density the columns of a group share one place, one under the other, at the place of
 // the first of them in the column order. Waiting goes under Working, Idle under Done.
 const GROUPS = [["working", "waiting"], ["done", "idle"]];
@@ -75,10 +72,9 @@ const GROUPS = [["working", "waiting"], ["done", "idle"]];
 const WAITING = "waiting";
 const statusColor = (t, status) => (status === WAITING ? t.ansi5 || t.accent : t[status] ?? t.idle);
 
-// The shell under the board: one core terminal with this name, outside every tab, shown by a
-// layout block { "terminal": "<address>" } with the id SHELL_ID. The bar adds the block the first time.
-const SHELL_NAME = "kanban-shell";
-const SHELL_ID = "shell";
+// Left by older versions: a core terminal with this name and the label kanban.shell=1, and a terminal block
+// "shell" in a column "board-main" with the board. The bar removes the block, and the terminal once it has ended (see dropShell, endShell).
+const OLD_SHELL = "kanban-shell";
 
 // The side panel of the layout (node "panel", stack "panel-body"): Herdr's own Files and Changes mods.
 const PANELS = [
@@ -92,6 +88,7 @@ const PANEL_GROUPS = { git: { label: "Git", icon: icon("git") } };
 const MENU_W = 220, MENU_PAD = 5, MENU_HEAD = 26, MENU_ROW = 32; // px: the menu of a group button
 const CLONE_W = 270; // px: the menu of the duplicate button of a card
 const EDIT_W = 280, EDIT_FOOT = 38; // px: the editor of the bar buttons (its width and its Reset row)
+const GEAR_W = 340, GEAR_ROW = 38, GEAR_HINT = 22, GEAR_SEP = 9; // px: the gear menu (a row with a control, the order hint, the line)
 
 // The order of the panel buttons and the buttons that the bar hides, shared with the Dock bar (the same key and the
 // same rules as in mods/tabs-dock): { order: [button id], hidden: [button id] }. A button id is the id of a panel or
@@ -173,7 +170,7 @@ const STR = {
     scopeAllTip: "Showing every space. Click to show only the current space.",
     scopeSpaceTip: "Showing only the current space. Click to show every space.",
     board: "Board", terminals: "Terminals", boardTip: "Show the board", terminalsTip: "Show the terminals of the current space",
-    detailOn: "Hide the terminal panel", detailOff: "Show the terminal panel", agentLabel: "Agent", shellLabel: "Shell",
+    detailOn: "Hide the terminal panel", detailOff: "Show the terminal panel", agentLabel: "Agent",
     newAgent: "New agent", hide: "Hide this column", showCol: "Show {name}", hideCol: "Hide {name}",
     emptyCol: "No agents here", emptyColSearch: "No match",
     allHidden: "All columns are hidden", allHiddenHint: "Show a column to see its agents.", showAll: "Show all columns",
@@ -183,19 +180,18 @@ const STR = {
     gearTitle: "Settings", gearHerdr: "Herdr settings", gearMods: "PowerMods",
     gearButtons: "Bar buttons", buttonsTitle: "Bar buttons (top of the list = left)", moveUp: "Move up", moveDown: "Move down",
     hideButton: "Hide in the bar", showButton: "Show in the bar", resetButtons: "Reset",
-    newTab: "New tab", settingsTip: "Open the settings", backTip: "Switch to the {name} layout", layoutHere: "Shown now: the {name} layout", panelTip: "Show or hide {name}",
+    newTab: "New tab", settingsTip: "Open the settings", panelTip: "Show or hide {name}",
     auto: "Auto", widthTip: "Column width: {w}. Use − and + to change it.",
     toAuto: "Set Auto: the columns share the whole board",
     widthAutoTip: "Click the value to go back to Auto.",
     narrower: "Narrower columns", wider: "Wider columns",
     moveLeft: "Move this column left", moveRight: "Move this column right",
-    shellOn: "Hide the shell under the board", shellOff: "Show a shell under the board",
     density_auto: "Auto", density_compact: "Compact", density_normal: "Normal",
     densityNow: "{mode} (compact now)", densityNowNormal: "{mode} (normal now)",
-    densityTip: "Density: {mode}. Click to switch to {next}.",
     cards_auto: "Auto", cards_summary: "Summary", cards_full: "Full",
     cardsAuto: "Auto (summary in compact density)",
-    cardsTip: "Cards: {mode}. Click to switch to {next}.",
+    widthLabel: "Column width", densityLabel: "Density", cardsLabel: "Cards", waitingLabel: "Waiting column",
+    columnsTitle: "Columns", orderHint: "The arrows in a column header change the order.",
     opens_auto: "Auto", opens_side: "Side panel", opens_dialog: "Dialog",
     opensNowDialog: "{mode} (dialog now)", opensNowSide: "{mode} (side panel now)",
     opensTip: "Panels open in: {mode}. Click to switch to {next}.",
@@ -216,7 +212,7 @@ const STR = {
     scopeAllTip: "Mostrando todos os espaços. Clique para mostrar só o espaço atual.",
     scopeSpaceTip: "Mostrando só o espaço atual. Clique para mostrar todos os espaços.",
     board: "Quadro", terminals: "Terminais", boardTip: "Mostrar o quadro", terminalsTip: "Mostrar os terminais do espaço atual",
-    detailOn: "Ocultar o painel do terminal", detailOff: "Mostrar o painel do terminal", agentLabel: "Agente", shellLabel: "Shell",
+    detailOn: "Ocultar o painel do terminal", detailOff: "Mostrar o painel do terminal", agentLabel: "Agente",
     newAgent: "Novo agente", hide: "Ocultar esta coluna", showCol: "Mostrar {name}", hideCol: "Ocultar {name}",
     emptyCol: "Nenhum agente aqui", emptyColSearch: "Nada encontrado",
     allHidden: "Todas as colunas estão ocultas", allHiddenHint: "Mostre uma coluna para ver os agentes dela.", showAll: "Mostrar todas as colunas",
@@ -226,19 +222,18 @@ const STR = {
     gearTitle: "Configurações", gearHerdr: "Configurações do Herdr", gearMods: "PowerMods",
     gearButtons: "Botões da barra", buttonsTitle: "Botões da barra (topo da lista = esquerda)", moveUp: "Mover para cima",
     moveDown: "Mover para baixo", hideButton: "Ocultar na barra", showButton: "Mostrar na barra", resetButtons: "Restaurar",
-    newTab: "Nova aba", settingsTip: "Abrir as configurações", backTip: "Trocar para o layout {name}", layoutHere: "Layout atual: {name}", panelTip: "Mostrar ou ocultar {name}",
+    newTab: "Nova aba", settingsTip: "Abrir as configurações", panelTip: "Mostrar ou ocultar {name}",
     auto: "Auto", widthTip: "Largura da coluna: {w}. Use − e + para mudar.",
     toAuto: "Voltar para Auto: as colunas dividem o quadro todo",
     widthAutoTip: "Clique no valor para voltar para Auto.",
     narrower: "Colunas mais estreitas", wider: "Colunas mais largas",
     moveLeft: "Mover esta coluna para a esquerda", moveRight: "Mover esta coluna para a direita",
-    shellOn: "Ocultar o shell abaixo do quadro", shellOff: "Mostrar um shell abaixo do quadro",
     density_auto: "Auto", density_compact: "Compacta", density_normal: "Normal",
     densityNow: "{mode} (compacta agora)", densityNowNormal: "{mode} (normal agora)",
-    densityTip: "Densidade: {mode}. Clique para mudar para {next}.",
     cards_auto: "Auto", cards_summary: "Resumido", cards_full: "Completo",
     cardsAuto: "Auto (resumido na densidade compacta)",
-    cardsTip: "Cartões: {mode}. Clique para mudar para {next}.",
+    widthLabel: "Largura da coluna", densityLabel: "Densidade", cardsLabel: "Cartões", waitingLabel: "Coluna Aguardando",
+    columnsTitle: "Colunas", orderHint: "As setas no cabeçalho de uma coluna mudam a ordem.",
     opens_auto: "Auto", opens_side: "Painel lateral", opens_dialog: "Diálogo",
     opensNowDialog: "{mode} (diálogo agora)", opensNowSide: "{mode} (painel lateral agora)",
     opensTip: "Os painéis abrem em: {mode}. Clique para mudar para {next}.",
@@ -284,7 +279,7 @@ const find = (node, id) => {
   return null;
 };
 // The node that shows and hides the side panel: the column "panel" around the stack "panel-body". When a block
-// leaves the layout (the shell under the board, when its terminal ends), Herdr removes each column that keeps only
+// leaves the layout (a terminal block, when its terminal ends), Herdr removes each column that keeps only
 // one child, and "panel" is one of them. Then the stack itself is the panel.
 const sidePanel = (root) => find(root, "panel") ?? find(root, "panel-body");
 // The name of a layout file as a button label: "main-dock" -> "Main dock".
@@ -340,6 +335,7 @@ export default class Kanban extends View {
       // The blocks that this bar hid or swapped for an off mod: { "<layout>|<block id>": "<mod>" }.
       this.kitOff = {};
       try { this.kitOff = JSON.parse(localStorage.getItem("kanban.kitOff") ?? "{}") ?? {}; } catch {}
+      cx.spawn(async () => this.endShell());
       const dir = `${appHome()}/dock`;
       cx.spawn(async (cx) => {
         try { await fs.mkdir(dir, { recursive: true }); } catch {}
@@ -416,7 +412,7 @@ export default class Kanban extends View {
 
   // ---- agents that wait for subagents --------------------------------------------
 
-  /** The Waiting column: on unless the person turned it off (the button in the bar, saved in
+  /** The Waiting column: on unless the person turned it off (the Waiting line in the gear menu, saved in
    *  shared) or the layout says `"waiting": false` in the props of the block. Off, every agent shows as
    *  its Herdr status says and the mod reads no transcript. */
   waitingOn() {
@@ -506,19 +502,9 @@ export default class Kanban extends View {
     return DENSITIES.includes(d) ? d : "auto";
   }
 
-  stepDensity() {
-    const i = DENSITIES.indexOf(this.density());
-    setShared(KEY_DENSITY, DENSITIES[(i + 1) % DENSITIES.length]);
-  }
-
   cardView() {
     const v = shared(KEY_CARDS);
     return CARD_VIEWS.includes(v) ? v : "auto";
-  }
-
-  stepCardView() {
-    const i = CARD_VIEWS.indexOf(this.cardView());
-    setShared(KEY_CARDS, CARD_VIEWS[(i + 1) % CARD_VIEWS.length]);
   }
 
   /** True when the cards show summarized. Auto follows the density of the board. */
@@ -550,7 +536,6 @@ export default class Kanban extends View {
   /** The stack child that shows now ("board-view" or "tabs-view"). */
   view() { return find(layout(), "view")?.active ?? "board-view"; }
   detailHidden() { return Boolean(find(layout(), "detail")?.hidden); }
-  shellShown() { const node = find(layout(), SHELL_ID); return Boolean(node && !node.hidden); }
 
   age(ms) {
     if (!ms) return "";
@@ -680,7 +665,6 @@ export default class Kanban extends View {
       run("layout.select", { stack: "view", child: "tabs-view" }); // the tab shows in the Terminals view
       return;
     }
-    if (entry.run === "layout.switch") setShared("layout.previous", shared("layout"));
     run(entry.run, entry.args ?? {});
   }
 
@@ -824,11 +808,15 @@ export default class Kanban extends View {
     if (this.overlay) closeOverlay(this.overlay);
   }
 
-  /** The gear button opens a menu: Herdr's settings, the editor of the bar buttons and, with the mods-hub
-   *  installed, the PowerMods dialog. */
+  /** The gear button opens a menu: the look of the board, the columns, Herdr's settings, the editor of the bar
+   *  buttons and, with the mods-hub installed, the PowerMods dialog. The card counts are those of now. */
   openGear() {
-    const open = (hub) => openOverlay({ mod: "kanban", kind: "popup", width: MENU_W,
-      height: MENU_PAD * 2 + MENU_HEAD + (hub ? 3 : 2) * MENU_ROW, props: { part: "gear-menu", lang: this.lang, hub } });
+    const shown = this.visible();
+    const counts = Object.fromEntries(COLUMNS.map((c) => [c.id, shown.filter((a) => a.status === c.id).length]));
+    const given = { part: "gear-menu", lang: this.lang, waiting: this.props.waiting, compact: this.compact(this.barW, BAR_WIDE), counts };
+    // Room for every column, so the menu still fits after the Waiting column is turned on.
+    const height = (hub) => MENU_PAD * 2 + 2 * MENU_HEAD + 3 * GEAR_ROW + (1 + COLUMNS.length + (hub ? 3 : 2)) * MENU_ROW + GEAR_HINT + GEAR_SEP;
+    const open = (hub) => openOverlay({ mod: "kanban", kind: "popup", width: GEAR_W, height: height(hub), props: { ...given, hub } });
     readTextFile(`${appHome()}/mods/mods-hub/mod.json`).then((text) => open(text != null), () => open(false));
   }
 
@@ -880,18 +868,50 @@ export default class Kanban extends View {
           .child(this.s("resetButtons"))));
   }
 
-  /** The menu of the gear button. "PowerMods" opens the dialog on its Settings tab, on the section of this bar (the tab and
-   *  the section that the mods-hub keeps in shared("mods-hub")). mod.open toggles: an open dialog closes. "Bar buttons" asks the bar
-   *  for the editor ("kanban.buttons"): the bar knows the buttons. */
+  /** The menu of the gear button. The settings write their shared keys at once and the menu stays open. "PowerMods" opens
+   *  the dialog on its Settings tab, on the section of this bar (the tab and the section that the mods-hub keeps in
+   *  shared("mods-hub")). mod.open toggles: an open dialog closes. "Bar buttons" asks the bar for the editor
+   *  ("kanban.buttons"): the bar knows the buttons. The links close the menu. */
   gearMenu(t) {
+    const p = this.props, counts = p.counts ?? {}, hidden = this.hidden();
     const go = (fn) => { fn(); if (this.overlay) closeOverlay(this.overlay); };
+    const head = (label) => h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim).child(label);
     const row = (id, symbol, label, fn) => h_flex().id(`kb-gear-${id}`).w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6)
       .cursor_pointer().text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { cx.stop_propagation(); go(fn); })
       .child(svg(icon(symbol)).size(15).flex_none().text_color(t.muted))
       .child(div().flex_1().min_w(0).truncate().child(label));
+    const setting = (id, symbol, label, control) => h_flex().id(`kb-gear-${id}`).w_full().h(GEAR_ROW).pl(10).pr(2).gap(10).flex_none().items_center()
+      .text_size(13).text_color(t.foreground)
+      .child(svg(icon(symbol)).size(15).flex_none().text_color(t.muted))
+      .child(div().flex_1().min_w(0).truncate().child(label))
+      .child(control);
+    const choice = (id, values, now, key, tip) => segmented(t, values.map((v) => ({ id: `kb-gear-${id}-${v}`, label: this.s(`${id}_${v}`),
+      active: v === now, tooltip: v === "auto" ? tip : "", onClick: () => setShared(key, v) })));
+    const density = this.s(p.compact ? "densityNow" : "densityNowNormal", { mode: this.s("density_auto") });
+    const waiting = this.waitingOn();
+    const chip = (c) => {
+      const on = !hidden.has(c.id), name = this.s(c.id);
+      return h_flex().w_full().h(MENU_ROW).pl(6).flex_none().items_center()
+        .child(columnChip(t, `kb-chip-${c.id}`, { label: name, color: statusColor(t, c.id), on, count: counts[c.id] ?? 0,
+          tooltip: this.s(on ? "hideCol" : "showCol", { name }) }, () => this.toggleColumn(c.id)));
+    };
     return v_flex().id("kb-gear-root").w_full().p(MENU_PAD)
-      .child(h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim).child(this.s("gearTitle")))
+      .child(head(this.s("gearTitle")))
+      .child(setting("width", "width", this.s("widthLabel"), this.widthControl(t)))
+      .child(setting("density", "density", this.s("densityLabel"), choice("density", DENSITIES, this.density(), KEY_DENSITY, density)))
+      .child(setting("cards", "cards", this.s("cardsLabel"), choice("cards", CARD_VIEWS, this.cardView(), KEY_CARDS, this.s("cardsAuto"))))
+      .child(h_flex().id("kb-gear-waiting").w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6).cursor_pointer()
+        .text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover)).tooltip(this.s(waiting ? "waitingOn" : "waitingOff"))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.toggleWaiting(); })
+        .child(svg(icon("hourglass")).size(15).flex_none().text_color(waiting ? t.accent : t.muted))
+        .child(div().flex_1().min_w(0).truncate().child(this.s("waitingLabel")))
+        .when(waiting, (e) => e.child(svg(icon("tick")).size(13).flex_none().text_color(t.accent))))
+      .child(head(this.s("columnsTitle")))
+      .children(this.columns().map(chip))
+      .child(h_flex().w_full().h(GEAR_HINT).px(10).flex_none().items_center()
+        .child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child(this.s("orderHint"))))
+      .child(div().w_full().h(1).my(4).flex_none().bg(t.border))
       .child(row("herdr", "settings", this.s("gearHerdr"), () => run("app.settings")))
       .child(row("buttons", "buttons", this.s("gearButtons"), () => run("kanban.buttons")))
       .when(this.props.hub !== false, (e) => e.child(row("mods", "mods", this.s("gearMods"), () => {
@@ -977,98 +997,39 @@ export default class Kanban extends View {
     run("layout.select", { stack: "view", child: "tabs-view" });
   }
 
-  /** The layout the switch offers to go back to: the one the person came from (saved by the dock
-   *  bar or by this bar), else props.back, else "main", else the first other layout. */
-  back() {
-    const names = layouts(), here = shared("layout");
-    return [shared("layout.previous"), this.props.back, "main", ...names]
-      .find((n) => typeof n === "string" && n !== here && names.includes(n)) ?? null;
-  }
+  // ---- the shell of older versions ---------------------------------------------
 
-  switchLayout(name) {
-    if (name === shared("layout")) return;
-    setShared("layout.previous", shared("layout")); // so the other layout can come back here
-    run("layout.switch", { name });
-  }
-
-  /** The layouts of the switch at the right end of the bar, in the order the Dock bar draws them:
-   *  the layout to go back to, then the layout.switch commands of dock/panels.json, then the shown
-   *  layout if no entry names it. Each item: { name, label, symbol }. */
-  layoutItems() {
-    const names = layouts(), here = shared("layout"), back = this.back(), items = [];
-    const add = (name, label, symbol) => {
-      if (typeof name === "string" && names.includes(name) && !items.some((i) => i.name === name)) items.push({ name, label, symbol });
+  /** Takes the shell block of older versions out of the layout, and unwraps its "board-main" column.
+   *  One attempt per layout; true when it ran layout.set. */
+  dropShell(root) {
+    if (!find(root, "shell")?.content?.terminal) return false;
+    const name = shared("layout");
+    if (this.shellTry === name) return false;
+    this.shellTry = name;
+    const strip = (node) => {
+      if (!Array.isArray(node?.children)) return node;
+      node.children = node.children.filter((c) => !(c.id === "shell" && c.content?.terminal)).map(strip);
+      return node.id === "board-main" && node.children.length === 1 ? node.children[0] : node;
     };
-    if (back) add(back, layoutLabel(back), icon("layout-main"));
-    for (const e of this.liveEntries()) if (e.opens === "command" && e.run === "layout.switch") add(e.args?.name, e.label, e.icon);
-    add(here, layoutLabel(here), icon("board"));
-    return items;
+    try { run("layout.set", { layout: strip(JSON.parse(JSON.stringify(root))) }); } catch (e) { console.log(`kanban: dropShell: ${e?.message ?? e}`); }
+    return true;
   }
 
-  /** The layout switch: one button per layout, the shown one lit. Empty with fewer than 2 layouts. */
-  layoutSwitch(t, iconOnly) {
-    const items = this.layoutItems(), here = shared("layout");
-    if (items.length < 2) return [];
-    return [buttonGroup(t, items.map((it) => panelButton(t, `kb-layout-${it.name}`, it.symbol, it.label, it.name === here,
-      () => this.switchLayout(it.name), this.s(it.name === here ? "layoutHere" : "backTip", { name: it.label }), iconOnly)))];
-  }
-
-  // ---- the shell under the board ----------------------------------------------
-
-  /** The address of the live kanban-shell terminal. Starts it when it is absent or finished:
-   *  the default shell of this computer (or props.shell, an argv list), in the folder of the active space. */
-  async ensureShell() {
-    const json = (r) => { try { return JSON.parse(r?.stdout ?? ""); } catch { return null; } };
-    const info = json(await hc(["get", SHELL_NAME, "--json"]));
-    if (info?.state === "live" && info.address) return info.address;
-    if (info?.address) await hc(["rm", SHELL_NAME]); // a finished terminal keeps its name until removed
-    const space = spaces().find((p) => p.active);
-    const args = ["run", "--bg", "--json", "--keep", "--no-parent", "--name", SHELL_NAME, "--label", "kanban.shell=1"];
-    if (space?.folder && !space.machine) args.push("--cwd", space.folder);
-    const argv = Array.isArray(this.props.shell) ? this.props.shell.map(String) : [];
-    if (argv.length) args.push("--", ...argv);
-    const r = await hc(args);
-    const out = json(r);
-    if (!out?.address) throw new Error(out?.error?.message || r?.stderr || "hc run gave no address");
-    return out.address;
-  }
-
-  /** Puts the shell block under the board, or points the block at a new address, with layout.set. */
-  placeShell(address) {
-    const tree = JSON.parse(JSON.stringify(layout()));
-    const node = find(tree, SHELL_ID);
-    if (node) {
-      node.content = { terminal: address };
-      delete node.hidden;
-    } else {
-      const view = find(tree, "board-view");
-      const i = view?.children?.findIndex((c) => c.id === "board") ?? -1;
-      if (i < 0) throw new Error('the layout has no "board" block in "board-view"');
-      view.children[i] = { id: "board-main", type: "column", gap: 12, min: 160, children: [view.children[i], {
-        id: SHELL_ID, type: "block", content: { terminal: address }, size: { px: 300 }, min: 120, max: 4000,
-        background: "background", border: { width: 1, color: "border" }, radius: 14,
-      }] };
-    }
-    run("layout.set", { layout: tree });
-  }
-
-  /** Hides the shell, or shows it: a live kanban-shell first, a new one when it ended. */
-  toggleShell(cx) {
-    if (this.shellBusy) return;
-    if (this.shellShown()) { run("layout.hide", { id: SHELL_ID }); return; }
-    this.shellBusy = true;
-    cx.notify();
-    cx.spawn(async (cx) => {
-      try {
-        const address = await this.ensureShell();
-        if (find(layout(), SHELL_ID)?.content?.terminal === address) run("layout.show", { id: SHELL_ID });
-        else this.placeShell(address);
-      } catch (e) {
-        notify({ title: "Kanban: shell", body: String(e?.message ?? e), level: "error", timeout: 6000 });
+  /** Removes the kanban-shell terminal of older versions once it has ended; a live one may still run
+   *  something of the person's, so it stays. */
+  async endShell() {
+    try {
+      const out = (await hc(["get", OLD_SHELL, "--json"]))?.stdout?.trim();
+      if (!out) return;
+      let info;
+      try { info = JSON.parse(out); } catch { return; }
+      if (info?.labels?.["kanban.shell"] !== "1") return;
+      if (info.state === "live") {
+        console.log(`kanban: ${OLD_SHELL} of an older version still runs; end it with \`hc kill ${OLD_SHELL}\`.`);
+        return;
       }
-      this.shellBusy = false;
-      cx.notify();
-    });
+      await hc(["rm", OLD_SHELL]);
+    } catch (e) { console.log(`kanban: endShell: ${e?.message ?? e}`); }
   }
 
   newAgent() { openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 }); }
@@ -1344,20 +1305,20 @@ export default class Kanban extends View {
   }
 
   /** The buttons of the side panel and of dock/panels.json: Files and Changes, then the entries of the file
-   *  in the order listed (side panels and tabs), then its commands. The layout.switch commands are not here:
-   *  they are in the layout switch. Empty when the layout has no `panel-body`. `iconOnly`: the names go to
-   *  the tooltips. Call it once per render: it also adds the blocks of the file to the layout. */
+   *  in the order listed (side panels and tabs), then its commands but layout.switch. Empty when the layout has
+   *  no `panel-body`. `iconOnly`: the names go to the tooltips. Call it once per render: it also edits the layout. */
   panelItems(t, iconOnly = false) {
     const root = layout(), panel = sidePanel(root), body = find(root, "panel-body");
+    // One layout edit for each render: the old shell first, then the panel edit, then the off mods.
+    const dropping = this.dropShell(root);
     if (!panel || !body) return [];
     // The entries that may use the panel stack: not the id of any other node of the layout.
     const taken = ids(root);
     for (const c of body.children ?? []) taken.delete(c.id);
     const live = this.liveEntries();
     const usable = live.filter((e) => e.opens !== "command" && !taken.has(e.id) && !PANELS.some((p) => p.id === e.id));
-    // One layout edit for each render: the off mods wait for the panel edit.
-    const injecting = this.loaded ? this.inject(root, body, usable.filter((e) => e.opens === "panel")) : false;
-    if (!injecting) this.reconcile(root);
+    const injecting = !dropping && this.loaded ? this.inject(root, body, usable.filter((e) => e.opens === "panel")) : false;
+    if (!dropping && !injecting) this.reconcile(root);
     // A panel dialog that shows a mod that is now off closes.
     const openDialog = shared(KEY_PANEL_DIALOG);
     if (openDialog?.id && liveDialogs().has(openDialog.id)) {
@@ -1390,20 +1351,16 @@ export default class Kanban extends View {
         if (!it.members) return panelButton(t, it.key, it.icon, it.label, it.on, () => this.togglePanel(it.entryId), it.tip, iconOnly);
         const info = this.groupInfo(it.group);
         return panelButton(t, `kb-group-${it.group}`, info.icon, info.label, it.members.some((m) => m.on), () => this.openGroup(it.group),
-          `${info.label}: ${it.members.map((m) => m.label).join(", ")}`, iconOnly, false, true);
+          `${info.label}: ${it.members.map((m) => m.label).join(", ")}`, iconOnly, true);
       }),
     ];
   }
 
-  /** The two blocks of the board view: the terminal of the selected agent (right) and the shell (under the board). */
-  regionButtons(t, iconOnly) {
+  /** Shows or hides the terminal of the selected agent, at the right of the board. */
+  detailButton(t, iconOnly) {
     const detail = this.detailHidden();
-    return [
-      panelButton(t, "kb-detail", icon("panel"), this.s("agentLabel"), !detail, () => run("layout.toggle", { id: "detail" }),
-        this.s(detail ? "detailOff" : "detailOn"), iconOnly),
-      panelButton(t, "kb-shell", icon(this.shellBusy ? "spinner" : "panel-bottom"), this.s("shellLabel"), this.shellShown(),
-        (cx) => this.toggleShell(cx), this.s(this.shellShown() ? "shellOn" : "shellOff"), iconOnly, Boolean(this.shellBusy)),
-    ];
+    return panelButton(t, "kb-detail", icon("panel"), this.s("agentLabel"), !detail, () => run("layout.toggle", { id: "detail" }),
+      this.s(detail ? "detailOff" : "detailOn"), iconOnly);
   }
 
   /** The value in the width control. With a width set, it is a button that sets Auto again. */
@@ -1416,33 +1373,17 @@ export default class Kanban extends View {
       .child(String(cap));
   }
 
-  /** [width icon] [−] 260 [+]: how wide a column may be. Auto lets the columns share the whole board. */
+  /** [−] 260 [+]: how wide a column may be. Auto lets the columns share the whole board. */
   widthControl(t) {
     const cap = this.maxWidth();
     const atMin = cap === WIDTHS[0], atMax = cap === null;
-    return h_flex().flex_none().gap(1).items_center()
+    return h_flex().id("kb-width").flex_none().gap(1).items_center()
       .tooltip(cap === null ? this.s("widthTip", { w: this.s("auto") }) : `${this.s("widthTip", { w: `${cap} px` })} ${this.s("widthAutoTip")}`)
-      .child(div().w(22).flex_none().flex().items_center().justify_center().child(svg(icon("width")).size(14).text_color(t.dim)))
       .child(iconButton(t, "kb-narrower", "minus", () => this.stepWidth(-1),
         { tooltip: this.s("narrower"), size: 24, glyph: 13, color: atMin ? t.dim : t.muted }))
       .child(this.widthValue(t, cap))
       .child(iconButton(t, "kb-wider", "plus", () => this.stepWidth(1),
         { tooltip: this.s("wider"), size: 24, glyph: 13, color: atMax ? t.dim : t.muted }));
-  }
-
-  /** How the board looks, in one group: column width, density and card view. */
-  displayGroup(t, compactNow) {
-    return buttonGroup(t, [this.widthControl(t), divider(t, true), this.densityButton(t, compactNow), this.cardsButton(t)]);
-  }
-
-  /** The density button: lit while the board and bar are compact. The tooltip names the mode and the next one. */
-  densityButton(t, compactNow) {
-    const d = this.density();
-    const next = DENSITIES[(DENSITIES.indexOf(d) + 1) % DENSITIES.length];
-    const name = (x) => this.s(`density_${x}`);
-    const mode = d === "auto" ? this.s(compactNow ? "densityNow" : "densityNowNormal", { mode: name(d) }) : name(d);
-    return iconButton(t, "kb-density", "density", () => this.stepDensity(),
-      { active: compactNow, size: 26, tooltip: this.s("densityTip", { mode, next: name(next) }) });
   }
 
   /** Where the panel buttons open their panel: lit while they open a dialog. The tooltip names the mode and the next one. */
@@ -1455,17 +1396,7 @@ export default class Kanban extends View {
       { active: now, size: 26, glyph: 14, tooltip: this.s("opensTip", { mode, next: name(next) }) });
   }
 
-  /** The card view button: lit while the cards are set to summary. */
-  cardsButton(t) {
-    const v = this.cardView();
-    const next = CARD_VIEWS[(CARD_VIEWS.indexOf(v) + 1) % CARD_VIEWS.length];
-    const name = (x) => this.s(`cards_${x}`);
-    return iconButton(t, "kb-cards", "cards", () => this.stepCardView(),
-      { active: v === "summary", size: 26, tooltip: this.s("cardsTip", { mode: v === "auto" ? this.s("cardsAuto") : name(v), next: name(next) }) });
-  }
-
   bar(t) {
-    const hidden = this.hidden();
     const all = agents();
     const need = all.filter((a) => a.status === "blocked").length;
     const view = this.view();
@@ -1478,22 +1409,15 @@ export default class Kanban extends View {
     const compact = this.compact(this.barW, BAR_WIDE);
     const count = need ? `${this.s("agents", all.length)} · ${this.s("needYou", { n: need })}` : this.s("agents", all.length);
 
-    // The bar reads left to right: what to see (Board / Terminals) | what to show (search, scope, columns)
-    // | how it looks (width, density, cards) | the agent and shell blocks | Settings | New agent | the right end.
-    // The right end is the same as in the Dock bar (tabs-dock), in the same place and size, so a layout
-    // switch does not move it: the panel group (Files, Changes, dock entries), the layout switch, the window
-    // buttons. In compact density the columns and the look group share one row that scrolls sideways.
-    // The panel buttons and the layout switch: names in Normal density, icons in Compact; in Auto, names
-    // from LABELS_WIDE px. tabs-dock reads the same density with the same rule, so the right ends match.
+    // The bar reads left to right: what to see (Board / Terminals) | what to show (search, scope, the agent
+    // terminal) | Settings (the gear menu has the look of the board and the columns) | New agent | the panel
+    // group (Files, Changes, dock entries) and the window buttons. The panel buttons: names in Normal density,
+    // icons in Compact; in Auto, names from LABELS_WIDE px.
     const d = this.density();
     const iconOnly = d === "normal" ? false : d === "compact" ? true : !(this.barW >= LABELS_WIDE);
-    const panels = this.panelItems(t, iconOnly); // once per render: it also adds the file's blocks to the layout
-    const regions = onBoard ? this.regionButtons(t, iconOnly) : [];
-    const regionGroup = regions.length ? [buttonGroup(t, regions)] : [];
-    const panelGroup = panels.length ? [buttonGroup(t, panels)] : [];
-    const right = h_flex().flex_none().gap(RIGHT_GAP).items_center()
-      .children(panelGroup)
-      .children(this.layoutSwitch(t, iconOnly))
+    const panels = this.panelItems(t, iconOnly); // once per render: it also edits the layout
+    const right = h_flex().flex_none().gap(6).items_center()
+      .when(panels.length > 0, (e) => e.child(buttonGroup(t, panels)))
       .when(w?.buttons, (e) => e.child(h_flex().flex_none().gap(2).items_center()
         .child(wbtn("kb-min", win ? svg(icon("win-min")).size(16) : "−", () => run("window.minimize")))
         .child(wbtn("kb-max", win ? svg(icon(w.maximized ? "win-restore" : "win-max")).size(16) : "□", () => run("window.maximize")))
@@ -1501,19 +1425,6 @@ export default class Kanban extends View {
     const settingsButton = iconButton(t, "kb-settings", "settings", () => this.openGear(),
       { size: 28, tooltip: this.s("settingsTip") });
     const newAgent = button(t, "kb-new", this.s("newAgent"), () => this.newAgent(), { primary: true, symbol: "bot", iconOnly: compact });
-    const chips = this.columns().map((c) => {
-      const on = !hidden.has(c.id), name = this.s(c.id);
-      return columnChip(t, `kb-chip-${c.id}`, {
-        label: name, color: statusColor(t, c.id), on, compact,
-        count: this.visible().filter((a) => a.status === c.id).length,
-        tooltip: this.s(on ? "hideCol" : "showCol", { name }),
-      }, () => this.toggleColumn(c.id));
-    });
-    const columnTools = [
-      ...chips,
-      iconButton(t, "kb-waiting", "hourglass", () => this.toggleWaiting(),
-        { active: this.waitingOn(), tooltip: this.s(this.waitingOn() ? "waitingOn" : "waitingOff") }),
-    ];
     const search = h_flex().flex_none().gap(4).items_center()
       .child(searchBox(t, "kb-search", this.query, {
         width: compact ? 150 : 220,
@@ -1527,7 +1438,7 @@ export default class Kanban extends View {
 
     // With the sidebar hidden, the macOS window buttons sit over the start of the bar: leave them room.
     const lights = w?.platform === "macos" && find(layout(), "sidebar")?.hidden ? 76 : 0;
-    return h_flex().id("kb-bar").size_full().min_w(0).pl(lights > 0 ? lights : compact ? 10 : 14).pr(BAR_RIGHT).gap(compact ? 6 : 10).items_center()
+    return h_flex().id("kb-bar").size_full().min_w(0).pl(lights > 0 ? lights : compact ? 10 : 14).pr(10).gap(compact ? 6 : 10).items_center()
       .bg(t.chrome).border_b(1).border_color(t.border)
       .on_size_change((size, cx) => {
         const width = Math.round(size.width);
@@ -1546,7 +1457,7 @@ export default class Kanban extends View {
           onClick: () => run("layout.select", { stack: "view", child: "tabs-view" }) },
       ]))
       .child(divider(t))
-      .when(onBoard, (e) => e.child(scroller([search, ...columnTools, this.displayGroup(t, compact), ...regionGroup])))
+      .when(onBoard, (e) => e.child(scroller([search, buttonGroup(t, [this.detailButton(t, iconOnly)])])))
       .when(!onBoard, (e) => e.child(this.tabStrip(t)))
       .child(settingsButton)
       .child(divider(t))
