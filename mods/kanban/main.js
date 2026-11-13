@@ -7,13 +7,14 @@
 //   "clone-menu" the menu of the duplicate button of a card, a popup (the board opens it, see openClone).
 //   "card-menu" the right-click menu of a card, a popup (the board opens it, see openCardMenu).
 //   "card-rename" the field that renames the tab of a card, a popup (the card menu opens it, see openRename).
+//   "new-dialog" the dialog that starts a session: machine, space, program, tab name (the bar and the card menu open it, see openNew).
 //   "gear-menu" the menu of the gear button: the look of the board, the columns, Herdr's settings, Bar buttons and PowerMods,
 //               a popup (the bar opens it, see openGear).
 //   "buttons-menu" the editor of the order and the visibility of the panel buttons, a popup (the bar opens it, see openButtons).
 // The parts share their state through shared(): hidden columns, search text, scope.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState } from "gpui-base";
-import { agents, spaces, panes, focused, layout, window, theme, props, shared, setShared, run, openOverlay, closeOverlay,
+import { agents, spaces, panes, machines, focused, layout, window, theme, props, shared, setShared, run, openOverlay, closeOverlay,
   setAgentOrder, appHome, home, terminals, readTextFile, watchFolder, notify, nextCommand, hc, knownAgents, exec } from "herdr";
 import * as fs from "fs/promises";
 import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pill, button, panelButton, panelGlyph, buttonGroup, divider, stop, machineChip, remoteColor } from "./ui.js";
@@ -21,6 +22,10 @@ import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pi
 /** The machine of an agent on another computer: its address is "<machine>/<terminal>". */
 const machineOf = (a) => (String(a?.address ?? "").includes("/") ? a.address.split("/")[0] : null);
 import { WaitingTracker } from "./waiting.js";
+
+/** The icon of an entry of knownAgents: a one-color glyph is tinted, anything else is a picture. */
+const agentGlyph = (a, t) => (!a.icon ? svg(icon("bot")).size(15).flex_none().text_color(t.muted)
+  : a.tint ? svg(a.icon).size(15).flex_none().text_color(a.color || t.foreground) : image(a.icon).size(15).flex_none());
 
 const KEY_LANG = "herdr-mods.lang"; // the language of the whole kit, set in the mods-hub; absent: props.lang
 const KEY_HIDDEN = "kanban.hidden"; // ids of the hidden columns
@@ -91,6 +96,9 @@ const MENU_W = 220, MENU_PAD = 5, MENU_HEAD = 26, MENU_ROW = 32; // px: the menu
 const CLONE_W = 270; // px: the menu of the duplicate button of a card
 const CARD_MENU_W = 250; // px: the right-click menu of a card
 const RENAME_W = 300, RENAME_ROW = 40; // px: the rename popup (its width and its field row)
+// px: the New session dialog (its size, a row of a list, a field row, the head and the foot). Its two lists
+// share the height that is left, so the size does not follow the number of spaces or agents.
+const NEW_W = 440, NEW_H = 520, NEW_ROW = 30, NEW_FIELD = 36, NEW_HEAD = 34, NEW_FOOT = 48;
 const EDIT_W = 280, EDIT_FOOT = 38; // px: the editor of the bar buttons (its width and its Reset row)
 const GEAR_W = 340, GEAR_ROW = 38, GEAR_HINT = 22, GEAR_SEP = 9; // px: the gear menu (a row with a control, the order hint, the line)
 
@@ -206,6 +214,14 @@ const STR = {
     menuCloseTip: "Closes every pane of the tab. Herdr asks first when it is the last tab of its space.",
     panes: (n) => (n === 1 ? "1 pane" : `${n} panes`), cardFail: "Kanban: the command failed",
     renameTitle: "Rename the tab", renameEmpty: "Empty: its number again", cancel: "Cancel", save: "Save",
+    menuNewHere: "New session here…",
+    newTitle: "New session", newMachine: "Machine", thisComputer: "This computer",
+    newUnreachable: "{name} cannot be reached now",
+    newSpaceLabel: "Space", newSpaceRow: "New space…", newSpaceHint: "Name of the space (optional)",
+    newNoSpaces: "No space on this machine yet",
+    newWhatLabel: "What to start", newTerminal: "Terminal", newTerminalTip: "A shell: the default of the machine",
+    newLoading: "Looking for agents…", newNoAgents: "No agent found on this machine",
+    newTabLabel: "Tab name", newTabHint: "Optional", newStart: "Start",
   },
   pt: {
     title: "Agentes", search: "Buscar agentes…",
@@ -252,6 +268,14 @@ const STR = {
     menuCloseTip: "Fecha todos os painéis da aba. O Herdr pergunta antes quando é a última aba do espaço.",
     panes: (n) => (n === 1 ? "1 painel" : `${n} painéis`), cardFail: "Kanban: o comando falhou",
     renameTitle: "Renomear a aba", renameEmpty: "Vazio: volta ao número", cancel: "Cancelar", save: "Salvar",
+    menuNewHere: "Nova sessão aqui…",
+    newTitle: "Nova sessão", newMachine: "Máquina", thisComputer: "Este computador",
+    newUnreachable: "{name} não pode ser acessada agora",
+    newSpaceLabel: "Espaço", newSpaceRow: "Novo espaço…", newSpaceHint: "Nome do espaço (opcional)",
+    newNoSpaces: "Nenhum espaço nesta máquina ainda",
+    newWhatLabel: "O que iniciar", newTerminal: "Terminal", newTerminalTip: "Um shell: o padrão da máquina",
+    newLoading: "Procurando agentes…", newNoAgents: "Nenhum agente encontrado nesta máquina",
+    newTabLabel: "Nome da aba", newTabHint: "Opcional", newStart: "Iniciar",
   },
 };
 
@@ -314,12 +338,13 @@ export default class Kanban extends View {
   init(given, cx) {
     // Read props once and keep them: props() in a later callback can answer for another copy.
     this.props = (given && Object.keys(given).length ? given : props()) || {};
-    const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "gear-menu", "buttons-menu"];
+    const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "new-dialog", "gear-menu", "buttons-menu"];
     this.part = ["bar", ...overlays].includes(this.props.part) ? this.props.part : "board";
     if (overlays.includes(this.part)) {
       this.overlay = this.props.overlay ?? props()?.overlay;
       if (this.part === "panel-title") this.takeKeys(cx);
       if (this.part === "card-rename") this.takeName(cx);
+      if (this.part === "new-dialog") this.takeNew(cx);
       return;
     }
     // Which Claude Code agents wait for subagents. Both parts run one: they count the cards too.
@@ -999,6 +1024,9 @@ export default class Kanban extends View {
       // No `confirmed`: Herdr asks before the last tab closes its space.
       { id: "close", symbol: "close", label: what ? this.s("menuCloseWith", { what }) : this.s("menuClose"), tip: this.s("menuCloseTip"),
         run: () => run("tab.close", { id: a.tab }) },
+      // The two rows that start something stay together, and Rename and Close keep their place.
+      { id: "new", symbol: "plus", label: this.s("menuNewHere"), more: true,
+        run: () => this.openNew({ space: a.space, machine: spaces().find((s) => s.id === a.space)?.machine ?? machineOf(a) }) },
       { id: "clone", symbol: "copy", label: this.s("duplicate"), more: true, run: () => this.openClone(a) },
       { id: "open", symbol: "open", label: this.s("open"), run: () => this.openInTab(a) },
       { id: "pin", symbol: "pin", label: this.s(a.pinned ? "unpin" : "pin"), run: () => this.togglePin(a) },
@@ -1072,6 +1100,159 @@ export default class Kanban extends View {
         .child(button(t, "kb-rn-save", this.s("save"), () => this.saveName(), { primary: true })));
   }
 
+  // ---- the New session dialog ------------------------------------------------
+
+  /** Opens the dialog that starts a session, filled in from `pre` ({ space?, machine? }) when the card menu
+   *  opens it. A dialog, not a popup: a form this tall does not fit beside the pointer, and Herdr's own
+   *  worktree dialog (see clone) is the same kind of form. */
+  openNew(pre = {}) {
+    openOverlay({
+      mod: "kanban", kind: "dialog", width: NEW_W, height: NEW_H,
+      props: { part: "new-dialog", lang: this.lang, ...pre },
+    });
+  }
+
+  // What the dialog holds: the machine (its name, null here), the space (null: a new one), the program
+  // (null: a terminal) and the two names. The tab name takes the keyboard at once and again after 40 ms,
+  // as the rename popup does.
+  takeNew(cx) {
+    // Filled in from the card menu; from the bar, the space of the window, so the dialog starts where the person is.
+    const want = spaces().find((s) => s.id === (this.props.space ?? focused()?.space));
+    const on = want ? want.machine ?? null : this.props.machine ?? null;
+    const list = this.machineRow();
+    this.machine = list.some((m) => (m.name ?? null) === on) ? on : list[0]?.name ?? null;
+    this.space = want?.id ?? null;
+    this.agent = null;
+    this.known = null; // the agents of the machine; null while knownAgents runs
+    this.newBusy = false;
+    this.spaceField = InputState.new({ placeholder: this.s("newSpaceHint") });
+    this.tabField = InputState.new({ placeholder: this.s("newTabHint") });
+    for (const f of [this.spaceField, this.tabField]) f.on("submit", () => this.startNew());
+    this.tabField.focus();
+    cx.timer.after(40, () => this.tabField.focus());
+    this.loadKnown(cx);
+  }
+
+  /** The machines a session can start on, this computer first; its name is null. */
+  machineRow() {
+    const list = machines().filter((m) => !m.temporary);
+    return [...list.filter((m) => !m.name), ...list.filter((m) => m.name)];
+  }
+
+  /** True while the chosen machine cannot be reached: tab.new and space.new fail there. Read live, because
+   *  a machine that was still loading when the dialog opened turns unavailable on the first failed read. */
+  offline() { return this.machineRow().find((m) => (m.name ?? null) === this.machine)?.layout === "unavailable"; }
+
+  /** The spaces of the chosen machine. */
+  spacesHere() { return spaces().filter((s) => (s.machine ?? null) === this.machine); }
+
+  /** The chosen space, or null for a new one (also once the chosen space is gone). */
+  chosenSpace() { return this.spacesHere().some((s) => s.id === this.space) ? this.space : null; }
+
+  /** Picks a machine by name: the space and the program belong to one, so both start over. */
+  pickMachine(name, cx) {
+    if (name === this.machine) return;
+    this.machine = name;
+    this.space = null;
+    this.agent = null;
+    this.loadKnown(cx);
+    cx.notify();
+  }
+
+  /** Reads the agents people can start on the chosen machine. The newest pick wins, in whatever order
+   *  the calls end; a check that fails leaves the list empty. */
+  loadKnown(cx) {
+    const on = this.machine;
+    const turn = (this.knownTurn = (this.knownTurn ?? 0) + 1);
+    this.known = null;
+    cx.spawn(async (cx) => {
+      let list = [];
+      try { list = await knownAgents({ on }); } catch {}
+      if (turn !== this.knownTurn) return;
+      this.known = list.filter((k) => k.installed && Array.isArray(k.run) && k.run.length);
+      cx.notify();
+    });
+  }
+
+  /** Starts the session: a tab in the chosen space, or a new space with that first tab. `machine: ""` is
+   *  this computer; leaving it out would follow the focused space instead. No argv: the machine's shell. */
+  startNew() {
+    if (this.newBusy || this.offline()) return; // Enter has to stop where the disabled Start button stops
+    const argv = this.agent ? (this.known ?? []).find((k) => k.key === this.agent)?.run : null;
+    const space = this.chosenSpace(), tab = this.tabField.value().trim(), name = this.spaceField.value().trim();
+    this.newBusy = true;
+    // Act first, then close: this copy of the mod ends with its dialog.
+    this.guard(() => (space != null
+      ? run("tab.new", { space, ...(tab ? { name: tab } : {}), ...(argv ? { argv } : {}) })
+      : run("space.new", { machine: this.machine ?? "", ...(name ? { name } : {}), ...(tab ? { tab } : {}), ...(argv ? { argv } : {}) })),
+      () => { this.newBusy = false; this.closeDialog(); });
+  }
+
+  /** The New session dialog: the machine, the space (an existing one or a new one), what to start and an
+   *  optional tab name. The two lists share the height that is left, so the dialog does not grow with them. */
+  newDialog(t) {
+    const list = this.machineRow(), here = this.spacesHere(), space = this.chosenSpace();
+    const known = this.known, off = this.offline();
+    const head = (text) => h_flex().w_full().h(MENU_HEAD).px(8).flex_none().items_center()
+      .text_size(11).font_semibold().text_color(t.dim).child(text);
+    const hint = (text) => h_flex().w_full().h(NEW_ROW).px(8).flex_none().items_center().text_size(12).text_color(t.dim).child(text);
+    const row = ({ id, on, glyph, label, note = "", tip = "", pick }) =>
+      h_flex().id(id).w_full().h(NEW_ROW).px(8).gap(8).flex_none().items_center().rounded(6).cursor_pointer()
+        .text_size(13).text_color(on ? t.accent : t.foreground)
+        .when(Boolean(tip), (e) => e.tooltip(tip))
+        .when(on, (e) => e.bg(tint(t.accent, "1a")))
+        .hover((s) => s.bg(on ? tint(t.accent, "33") : t.hover))
+        .on_click((_e, cx) => { cx.stop_propagation(); pick(cx); cx.notify(); })
+        .child(glyph)
+        .child(div().flex_1().min_w(0).truncate().child(label))
+        .when(Boolean(note), (e) => e.child(div().flex_none().max_w(120).truncate().text_size(11).text_color(t.dim).child(note)))
+        .when(on, (e) => e.child(svg(icon("tick")).size(13).flex_none().text_color(t.accent)));
+    // `label`: an empty one gives the field the whole row.
+    const field = (id, label, state) => h_flex().w_full().h(NEW_FIELD).px(8).gap(8).flex_none().items_center()
+      .when(Boolean(label), (e) => e.child(div().w(90).flex_none().text_size(12).text_color(t.dim).child(label)))
+      .child(div().flex_1().min_w(0).child(textField(t, id, state)));
+    // One machine (the usual case): its name, not a list of one.
+    const machine = list.length > 1
+      ? h_flex().flex_1().min_w(0).items_center().overflow_x_scrollbar().child(segmented(t, list.map((m) => ({
+        id: `kb-nw-m-${m.name ?? "here"}`, label: m.name ?? this.s("thisComputer"), symbol: m.name ? "server" : undefined,
+        active: (m.name ?? null) === this.machine, onClick: (cx) => this.pickMachine(m.name ?? null, cx) }))))
+      : this.machine
+        ? h_flex().flex_1().min_w(0).items_center().child(machineChip(t, "kb-nw-m-chip", this.machine))
+        : div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(this.s("thisComputer"));
+    return v_flex().id("kb-nw-root").size_full().min_h(0).p(MENU_PAD)
+      .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); this.closeDialog(); } })
+      .child(h_flex().w_full().h(NEW_HEAD).px(8).flex_none().items_center().text_size(14).font_semibold()
+        .text_color(t.foreground).child(this.s("newTitle")))
+      .child(h_flex().w_full().h(NEW_FIELD).px(8).gap(8).flex_none().items_center()
+        .child(div().w(90).flex_none().text_size(12).text_color(t.dim).child(this.s("newMachine")))
+        .child(machine))
+      .child(head(this.s("newSpaceLabel")))
+      .child(v_flex().id("kb-nw-spaces").w_full().flex_1().min_h(0).gap(2).overflow_y_scrollbar()
+        .when(!here.length, (e) => e.child(hint(this.s("newNoSpaces"))))
+        .children(here.map((s) => row({ id: `kb-nw-s-${s.id}`, on: s.id === space, label: s.name || base(s.folder) || s.id,
+          note: s.branch ?? "", glyph: svg(icon("folder")).size(15).flex_none().text_color(s.id === space ? t.accent : t.muted),
+          pick: () => { this.space = s.id; } }))))
+      .child(row({ id: "kb-nw-s-new", on: space == null, label: this.s("newSpaceRow"),
+        glyph: svg(icon("plus")).size(15).flex_none().text_color(space == null ? t.accent : t.muted),
+        pick: (cx) => { this.space = null; this.spaceField.focus(); cx.timer.after(40, () => this.spaceField.focus()); } }))
+      .when(space == null, (e) => e.child(field("kb-nw-space-name", "", this.spaceField)))
+      .child(head(this.s("newWhatLabel")))
+      .child(v_flex().id("kb-nw-what").w_full().flex_1().min_h(0).gap(2).overflow_y_scrollbar()
+        .child(row({ id: "kb-nw-a-terminal", on: !this.agent, label: this.s("newTerminal"), tip: this.s("newTerminalTip"),
+          glyph: svg(icon("terminal")).size(15).flex_none().text_color(!this.agent ? t.accent : t.muted),
+          pick: () => { this.agent = null; } }))
+        .when(known == null, (e) => e.child(hint(this.s("newLoading"))))
+        .when(known != null && !known.length, (e) => e.child(hint(this.s("newNoAgents"))))
+        .children((known ?? []).map((k) => row({ id: `kb-nw-a-${k.key}`, on: this.agent === k.key, label: k.name || k.key,
+          glyph: agentGlyph(k, t), pick: () => { this.agent = k.key; } }))))
+      .child(field("kb-nw-tab", this.s("newTabLabel"), this.tabField))
+      .child(h_flex().w_full().h(NEW_FOOT).px(8).pt(8).gap(6).flex_none().items_center().justify_end()
+        .when(off, (e) => e.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.blocked)
+          .child(this.s("newUnreachable", { name: this.machine ?? this.s("thisComputer") }))))
+        .child(button(t, "kb-nw-cancel", this.s("cancel"), () => this.closeDialog()))
+        .child(button(t, "kb-nw-start", this.s("newStart"), () => this.startNew(), { primary: true, symbol: "plus", disabled: off })));
+  }
+
   dialogToSide() {
     this.closeDialog();
     const tab = this.props.tab;
@@ -1135,8 +1316,6 @@ export default class Kanban extends View {
       await hc(["rm", OLD_SHELL]);
     } catch (e) { console.log(`kanban: endShell: ${e?.message ?? e}`); }
   }
-
-  newAgent() { openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 }); }
 
   // ---- the board -------------------------------------------------------------
 
@@ -1350,7 +1529,7 @@ export default class Kanban extends View {
     const searching = String(shared(KEY_QUERY) ?? "").trim().length > 0;
     if (!all.length) {
       return this.emptyState(t, this.s("none"), this.s("noneHint"),
-        button(t, "kb-new", this.s("newAgent"), () => this.newAgent(), { primary: true, symbol: "plus" }));
+        button(t, "kb-new", this.s("newAgent"), () => this.openNew(), { primary: true, symbol: "plus" }));
     }
     const shown = this.visible();
     const byStatus = (id) => shown.filter((a) => a.status === id)
@@ -1530,7 +1709,7 @@ export default class Kanban extends View {
         .child(wbtn("kb-close", win ? svg(icon("win-close")).size(16) : svg(icon("close")).size(13), () => run("window.close")))));
     const settingsButton = iconButton(t, "kb-settings", "settings", () => this.openGear(),
       { size: 28, tooltip: this.s("settingsTip") });
-    const newAgent = button(t, "kb-new", this.s("newAgent"), () => this.newAgent(), { primary: true, symbol: "bot", iconOnly: compact });
+    const newAgent = button(t, "kb-new", this.s("newAgent"), () => this.openNew(), { primary: true, symbol: "bot", iconOnly: compact });
     const search = h_flex().flex_none().gap(4).items_center()
       .child(searchBox(t, "kb-search", this.query, {
         width: compact ? 150 : 220,
@@ -1578,6 +1757,7 @@ export default class Kanban extends View {
     if (this.part === "clone-menu") return this.cloneMenu(t);
     if (this.part === "card-menu") return this.cardMenu(t);
     if (this.part === "card-rename") return this.renameBox(t);
+    if (this.part === "new-dialog") return this.newDialog(t);
     if (this.part === "gear-menu") return this.gearMenu(t);
     if (this.part === "buttons-menu") return this.buttonsMenu(t);
     this.syncWaiting(cx);
