@@ -1,7 +1,7 @@
 // Kanban for the Herdr app: every agent is a card in a column by status.
 // One mod, parts chosen by props.part:
-//   "bar"   the top bar: search, space filter, New agent, gear, panel buttons, window buttons.
-//   "board" the columns with the cards.
+//   "bar"   the top bar: search, space filter, grouping, New agent, gear, panel buttons, window buttons.
+//   "board" the columns with the cards; grouped, one swimlane per machine or space under the column heads.
 //   "tab-head" the head of the tab panel: the tab, its space and machine, the maximize button.
 //   "panel-title" the title row of a panel dialog (the bar opens it, see openDialog).
 //   "group-menu" the menu of a group button of the panel group, a popup (the bar opens it, see openGroup).
@@ -23,6 +23,7 @@ import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pi
 /** The machine of an agent on another computer: its address is "<machine>/<terminal>". */
 const machineOf = (a) => (String(a?.address ?? "").includes("/") ? a.address.split("/")[0] : null);
 import { WaitingTracker } from "./waiting.js";
+import { inColumn, groupLanes, laneOrder } from "./lanes.js";
 
 /** The icon of an entry of knownAgents: a one-color glyph is tinted, anything else is a picture. */
 const agentGlyph = (a, t) => (!a.icon ? svg(icon("bot")).size(15).flex_none().text_color(t.muted)
@@ -42,6 +43,8 @@ const KEY_DENSITY = "kanban.density"; // "auto" | "compact" | "normal"; absent: 
 const KEY_CARDS = "kanban.cards"; // "auto" | "summary" | "full"; absent: auto (summary while the board is compact)
 const KEY_PANEL_OPEN = "kanban.panelOpen"; // "auto" | "side" | "dialog"; absent: auto. Shared with the Dock bar (tabs-dock)
 const KEY_PANEL_DIALOG = "kanban.panelDialog"; // { id, panel }: the panel dialog that is open now; null: none
+const KEY_GROUP = "kanban.group"; // "none" | "machine" | "space"; absent: none
+const KEY_COLLAPSED = "kanban.collapsed"; // ids of the folded lanes: "machine:<name>" ("machine:" here), "space:<id>", "other"
 // Where the panel buttons open their panel. The button in the bar goes auto -> side -> dialog -> auto.
 // Auto opens a dialog when the bar is narrower than PANEL_NARROW px (a small monitor), else the side panel.
 const PANEL_OPENS = ["auto", "side", "dialog"];
@@ -71,6 +74,9 @@ const GAP = 12, GAP_COMPACT = 8; // between the columns
 const DENSITIES = ["auto", "compact", "normal"];
 // Card view, set in the gear menu.
 const CARD_VIEWS = ["auto", "summary", "full"];
+// Swimlanes, set in the bar; the icon of each choice.
+const GROUPINGS = ["none", "machine", "space"];
+const GROUP_ICONS = { none: "board", machine: "server", space: "folder" };
 const BAR_WIDE = 1800;
 const LABELS_WIDE = 2250; // from this bar width the panel buttons show their names, not only icons
 const COLUMN_WIDE = 220;
@@ -242,6 +248,7 @@ const STR = {
     newWhatLabel: "What to start", newTerminal: "Terminal", newTerminalTip: "A shell: the default of the machine",
     newLoading: "Looking for agents…", newNoAgents: "No agent found on this machine",
     newTabLabel: "Tab name", newTabHint: "Optional", newStart: "Start",
+    group_none: "One board, no lanes", group_machine: "A lane per machine", group_space: "A lane per space", other: "Other",
   },
   pt: {
     title: "Agentes", search: "Buscar agentes…",
@@ -296,6 +303,7 @@ const STR = {
     newWhatLabel: "O que iniciar", newTerminal: "Terminal", newTerminalTip: "Um shell: o padrão da máquina",
     newLoading: "Procurando agentes…", newNoAgents: "Nenhum agente encontrado nesta máquina",
     newTabLabel: "Nome da aba", newTabHint: "Opcional", newStart: "Iniciar",
+    group_none: "Um quadro, sem raias", group_machine: "Uma raia por máquina", group_space: "Uma raia por espaço", other: "Outros",
   },
 };
 
@@ -410,7 +418,7 @@ export default class Kanban extends View {
       // closes the panel <id> (files, changes, or an id of dock/panels.json), as its button does.
       // "kanban.group-<id>" opens the menu of a group button (kanban.group-git). "kanban.gear" does what the
       // gear button does. "kanban.buttons" opens the editor of the bar buttons. "kanban.maximize" maximizes
-      // the tab panel or restores the board.
+      // the tab panel or restores the board. "kanban.group" steps the lanes: none -> machine -> space.
       cx.spawn(async (cx) => {
         for (;;) {
           const cmd = String(await nextCommand());
@@ -418,6 +426,7 @@ export default class Kanban extends View {
           else if (cmd === "gear") this.openGear();
           else if (cmd === "buttons") this.openButtons();
           else if (cmd === "maximize") this.toggleMaximize();
+          else if (cmd === "group") this.stepGroup();
           else if (cmd.startsWith("group-")) this.openGroup(cmd.slice(6));
           else if (cmd.startsWith("panel-")) this.togglePanel(cmd.slice(6));
           cx.notify();
@@ -565,6 +574,26 @@ export default class Kanban extends View {
     if (!space) return;
     setShared(KEY_SCOPE_SPACE, space);
     setShared(KEY_SCOPE, "space");
+  }
+
+  /** How the board splits into lanes: "none", "machine" or "space". */
+  grouping() {
+    const g = shared(KEY_GROUP);
+    return GROUPINGS.includes(g) ? g : "none";
+  }
+
+  stepGroup() { setShared(KEY_GROUP, GROUPINGS[(GROUPINGS.indexOf(this.grouping()) + 1) % GROUPINGS.length]); }
+
+  /** The ids of the folded lanes. Ids of spaces that are gone stay: a machine that is offline lists none. */
+  collapsed() {
+    const list = shared(KEY_COLLAPSED);
+    return new Set(Array.isArray(list) ? list.filter((id) => typeof id === "string") : []);
+  }
+
+  toggleLane(id) {
+    const set = this.collapsed();
+    if (set.has(id)) set.delete(id); else set.add(id);
+    setShared(KEY_COLLAPSED, [...set]);
   }
 
   /** The widest a column may be (px), or null for Auto. */
@@ -1571,34 +1600,51 @@ export default class Kanban extends View {
     return fixed ? el.flex_none().w(min) : el.flex_1().min_w(min).when(cap !== null, (e) => e.max_w(cap));
   }
 
-  /** One status column. `compact`: smaller header and cards. `fixed`: see sized().
-   *  `stacked`: the column shares its place with another column, one under the other. */
-  column(c, list, t, searching, { compact = false, fixed = false, stacked = false, summary = false } = {}) {
+  /** The rounded box of column `c`, tinted with its status color; `urgent`: a stronger border. */
+  frame(el, c, t, compact, urgent) {
     const color = statusColor(t, c.id);
-    const urgent = c.id === "blocked" && list.length > 0;
+    return el.rounded(compact ? 12 : 16).overflow_hidden()
+      .border_1().border_color(urgent ? tint(color, "66") : tint(color, "26")).bg(tint(color, "0d"));
+  }
+
+  /** The header of column `c`: its tile, its name, the card count, the arrows and the eye. */
+  columnHead(c, count, t, compact) {
+    const color = statusColor(t, c.id);
+    const urgent = c.id === "blocked" && count > 0;
     const tile = div().size(compact ? 22 : 26).rounded(compact ? 7 : 8).flex_none().flex().items_center().justify_center().bg(tint(color, "26"))
       .child(svg(icon(c.symbol)).size(compact ? 12 : 14).text_color(color));
     const btn = compact ? 20 : 24;
     // Compact: the arrows and the eye show only while the pointer is on the header, so the name has room.
     const tools = !compact || this.hoverCol === c.id;
-    const box = v_flex().id(`col-${c.id}`).min_h(0).rounded(compact ? 12 : 16).overflow_hidden();
-    return (stacked ? box.w_full().flex_1() : this.sized(box.h_full(), compact, fixed))
-      .border_1().border_color(urgent ? tint(color, "66") : tint(color, "26")).bg(tint(color, "0d"))
-      .child(h_flex().id(`head-${c.id}`).h(compact ? 40 : 48).flex_none().px(compact ? 8 : 12).gap(compact ? 4 : 9).items_center()
-        .when(compact, (e) => e.on_hover((hovered, cx) => {
-          const next = hovered ? c.id : this.hoverCol === c.id ? null : this.hoverCol;
-          if (next !== this.hoverCol) { this.hoverCol = next; cx.notify(); }
-        }))
-        .child(urgent ? tile.loop("opacity", { from: 0.55, to: 1, period: 1200 }) : tile)
-        .child(div().flex_1().min_w(0).truncate().text_size(compact ? 12 : 13).font_semibold().text_color(t.foreground).child(this.s(c.id)))
-        .child(div().h(20).px(compact ? 6 : 8).flex_none().rounded(10).flex().items_center().text_size(11).font_semibold()
-          .bg(tint(color, "26")).text_color(color).child(String(list.length)))
-        .when(tools, (e) => e
-          .child(this.moveButton(t, c, -1, compact))
-          .child(this.moveButton(t, c, 1, compact))
-          .child(iconButton(t, `hide-${c.id}`, "eye-off", () => this.toggleColumn(c.id), { tooltip: this.s("hide"), size: btn, glyph: compact ? 12 : 14, color: t.dim }))))
-      .child(v_flex().id(`scroll-${c.id}`).flex_1().min_h(0).overflow_y_scrollbar().px(compact ? 7 : 10).pb(compact ? 7 : 10).gap(summary ? 6 : compact ? 7 : 10)
-        .children(list.map((a) => (summary ? this.summaryCard(a, t) : this.card(a, t, compact))))
+    return h_flex().id(`head-${c.id}`).h(compact ? 40 : 48).flex_none().px(compact ? 8 : 12).gap(compact ? 4 : 9).items_center()
+      .when(compact, (e) => e.on_hover((hovered, cx) => {
+        const next = hovered ? c.id : this.hoverCol === c.id ? null : this.hoverCol;
+        if (next !== this.hoverCol) { this.hoverCol = next; cx.notify(); }
+      }))
+      .child(urgent ? tile.loop("opacity", { from: 0.55, to: 1, period: 1200 }) : tile)
+      .child(div().flex_1().min_w(0).truncate().text_size(compact ? 12 : 13).font_semibold().text_color(t.foreground).child(this.s(c.id)))
+      .child(div().h(20).px(compact ? 6 : 8).flex_none().rounded(10).flex().items_center().text_size(11).font_semibold()
+        .bg(tint(color, "26")).text_color(color).child(String(count)))
+      .when(tools, (e) => e
+        .child(this.moveButton(t, c, -1, compact))
+        .child(this.moveButton(t, c, 1, compact))
+        .child(iconButton(t, `hide-${c.id}`, "eye-off", () => this.toggleColumn(c.id), { tooltip: this.s("hide"), size: btn, glyph: compact ? 12 : 14, color: t.dim })));
+  }
+
+  /** The cards of `list` in `el`, with the padding and the gap of the density. */
+  cardStack(el, list, t, compact, summary) {
+    return el.px(compact ? 7 : 10).gap(summary ? 6 : compact ? 7 : 10)
+      .children(list.map((a) => (summary ? this.summaryCard(a, t) : this.card(a, t, compact))));
+  }
+
+  /** One status column. `compact`: smaller header and cards. `fixed`: see sized().
+   *  `stacked`: the column shares its place with another column, one under the other. */
+  column(c, list, t, searching, { compact = false, fixed = false, stacked = false, summary = false } = {}) {
+    const color = statusColor(t, c.id);
+    const box = v_flex().id(`col-${c.id}`).min_h(0);
+    return this.frame(stacked ? box.w_full().flex_1() : this.sized(box.h_full(), compact, fixed), c, t, compact, c.id === "blocked" && list.length > 0)
+      .child(this.columnHead(c, list.length, t, compact))
+      .child(this.cardStack(v_flex().id(`scroll-${c.id}`).flex_1().min_h(0).overflow_y_scrollbar().pb(compact ? 7 : 10), list, t, compact, summary)
         .when(list.length === 0, (e) => e.child(
           v_flex().h(compact ? 64 : 96).flex_none().items_center().justify_center().gap(compact ? 4 : 8).rounded(12)
             .border_1().border_dashed().border_color(tint(color, "44"))
@@ -1625,11 +1671,13 @@ export default class Kanban extends View {
     }
     const shown = this.visible();
     this.shown = shownTab().id; // the cards of the tab in the panel show as selected
-    const byStatus = (id) => shown.filter((a) => a.status === id)
-      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.seq - a.seq);
     const cols = this.columns().filter((c) => !hidden.has(c.id));
+    const ids = cols.map((c) => c.id);
+    const by = this.grouping();
+    // Only the cards of the shown columns, so a lane with none of them goes away.
+    const lanes = by === "none" ? null : groupLanes(shown.filter((a) => ids.includes(a.status)), by, spaces(), machineOf);
     // agent.next and agent.prev walk the cards in the order they show.
-    setAgentOrder(cols.flatMap((c) => byStatus(c.id)).map((a) => a.address));
+    setAgentOrder(lanes ? laneOrder(lanes, ids, this.collapsed()) : ids.flatMap((id) => inColumn(shown, id)).map((a) => a.address));
     if (!cols.length) {
       return this.emptyState(t, this.s("allHidden"), this.s("allHiddenHint"),
         button(t, "kb-show-all", this.s("showAll"), () => setShared(KEY_HIDDEN, []), { primary: true, symbol: "eye" }));
@@ -1651,12 +1699,65 @@ export default class Kanban extends View {
     const min = compact ? MIN_COLUMN_COMPACT : MIN_COLUMN, gap = compact ? GAP_COMPACT : GAP;
     const fixed = typeof this.boardW === "number" && this.boardW < n * min + (n - 1) * gap;
     const opts = { compact, fixed, summary: this.summary(compact) };
+    if (lanes) return this.laneBoard(t, lanes, by, places, shown, searching, { ...opts, gap, width: n * min + (n - 1) * gap });
     return h_flex().id("kb-columns").size_full().min_h(0).gap(gap)
       .when(fixed, (e) => e.overflow_x_scrollbar())
       .children(places.map((p) => p.length === 1
-        ? this.column(p[0], byStatus(p[0].id), t, searching, opts)
+        ? this.column(p[0], inColumn(shown, p[0].id), t, searching, opts)
         : this.sized(v_flex().id(`place-${p[0].id}`).h_full().min_h(0).gap(gap), compact, fixed)
-          .children(p.map((c) => this.column(c, byStatus(c.id), t, searching, { ...opts, stacked: true })))));
+          .children(p.map((c) => this.column(c, inColumn(shown, c.id), t, searching, { ...opts, stacked: true })))));
+  }
+
+  /** The board in lanes: the column heads once on top, under them the lanes, which scroll as one list.
+   *  A lane row has the places of the board, as wide as the heads, and grows with its tallest column. */
+  laneBoard(t, lanes, by, places, shown, searching, { compact, fixed, summary, gap, width }) {
+    const folded = this.collapsed();
+    // A row that does not center its children: the boxes of a row stretch to its height.
+    const row = () => div().flex().flex_none().gap(gap).when(fixed, (e) => e.w(width)).when(!fixed, (e) => e.w_full());
+    // A place holds one box, or (compact) the boxes of a group one under the other; the last takes what is left.
+    const place = (p, box) => (p.length === 1 ? this.sized(box(p[0]), compact, fixed)
+      : this.sized(v_flex().gap(gap), compact, fixed)
+        .children(p.map((c, i) => (i === p.length - 1 ? box(c).w_full().flex_1() : box(c).w_full().flex_none()))));
+    // Top-aligned, so a single head does not stretch to a compact pair.
+    const heads = row().items_start().children(places.map((p) => place(p, (c) => {
+      const count = inColumn(shown, c.id).length;
+      return this.frame(v_flex().id(`col-${c.id}`), c, t, compact, c.id === "blocked" && count > 0).child(this.columnHead(c, count, t, compact));
+    })));
+    const lane = (g) => {
+      const shut = folded.has(g.id);
+      const label = by === "machine" ? (g.machine ? null : this.s("thisComputer"))
+        : g.space ? g.space.name || base(g.space.folder) || g.space.id : this.s("other");
+      return v_flex().w_full().flex_none().gap(compact ? 4 : 6)
+        .child(this.laneHead(g, label, places.flat(), t, shut))
+        .when(!shut, (e) => e.child(row().children(places.map((p) => place(p, (c) => {
+          const list = inColumn(g.agents, c.id);
+          return this.frame(this.cardStack(v_flex().py(compact ? 7 : 10), list, t, compact, summary), c, t, compact, c.id === "blocked" && list.length > 0);
+        })))));
+    };
+    return v_flex().id("kb-board").size_full().min_h(0).gap(gap)
+      .when(fixed, (e) => e.overflow_x_scrollbar())
+      .child(heads)
+      .child(v_flex().id("kb-lanes").flex_1().min_h(0).overflow_y_scrollbar().gap(compact ? 8 : 12)
+        .when(fixed, (e) => e.w(width))
+        .children(lanes.map(lane))
+        .when(lanes.length === 0, (e) => e.child(div().w_full().py(24).text_center().text_size(12).text_color(t.dim)
+          .child(this.s(searching ? "emptyColSearch" : "emptyCol")))));
+  }
+
+  /** The head of a lane: a chevron that folds it, its name and machine, its card count; folded, a dot and a count per status. */
+  laneHead(g, label, cols, t, shut) {
+    return h_flex().id(`lane-${g.id}`).h(30).w_full().flex_none().px(8).gap(8).items_center().rounded(8).cursor_pointer()
+      .bg(tint(t.foreground, "0a")).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.toggleLane(g.id); })
+      .child(svg(icon(shut ? "chevron-right" : "chevron-down")).size(14).flex_none().text_color(t.muted))
+      .when(Boolean(label), (e) => e.child(div().flex_shrink(1).min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground).child(label)))
+      .when(Boolean(g.machine), (e) => e.child(machineChip(t, `lane-machine-${g.id}`, g.machine)))
+      .child(div().h(20).px(8).flex_none().rounded(10).flex().items_center().text_size(11).font_semibold()
+        .bg(tint(t.foreground, "14")).text_color(t.muted).child(String(g.agents.length)))
+      .when(shut, (e) => e.children(cols.map((c) => [c, inColumn(g.agents, c.id).length]).filter(([, n]) => n > 0)
+        .map(([c, n]) => h_flex().flex_none().gap(4).items_center().text_size(11).text_color(t.dim)
+          .child(div().size(7).rounded(4).flex_none().bg(statusColor(t, c.id)))
+          .child(String(n)))));
   }
 
   // ---- the top bar -------------------------------------------------------------
@@ -1730,6 +1831,13 @@ export default class Kanban extends View {
       { active: on, size: 32, tooltip: this.s(on ? "scopeSpaceTip" : "scopeAllTip", { name }) });
   }
 
+  /** None / machine / space: how the board splits into lanes. Icons only, the tooltips name them. */
+  groupControl(t) {
+    const now = this.grouping();
+    return segmented(t, GROUPINGS.map((g) => ({ id: `kb-group-${g}`, symbol: GROUP_ICONS[g], active: g === now,
+      tooltip: this.s(`group_${g}`), onClick: () => setShared(KEY_GROUP, g) })));
+  }
+
   /** The head of the tab panel: the tab name, its space and its machine, and the maximize button. */
   tabHead(t) {
     const { space, tab, id } = shownTab();
@@ -1801,7 +1909,7 @@ export default class Kanban extends View {
     const compact = this.compact(this.barW, BAR_WIDE);
     const count = need ? `${this.s("agents", all.length)} · ${this.s("needYou", { n: need })}` : this.s("agents", all.length);
 
-    // The bar reads left to right: what to show (search, scope, the tab panel) | Settings (the gear menu has the
+    // The bar reads left to right: what to show (search, scope, the lanes, the tab panel) | Settings (the gear menu has the
     // look of the board and the columns) | New agent | the panel group (Files, Changes, dock entries) and the
     // window buttons. The panel buttons: names in Normal density, icons in Compact; in Auto, names from LABELS_WIDE px.
     const d = this.density();
@@ -1822,7 +1930,7 @@ export default class Kanban extends View {
         onClear: () => { this.query.set_value(""); setShared(KEY_QUERY, ""); },
       }))
       .child(this.scopeButton(t));
-    // The search, the filter and the Agent button share one row that scrolls sideways when the bar is too narrow
+    // The search, the filter, the lanes and the Agent button share one row that scrolls sideways when the bar is too narrow
     // (Normal density on a small monitor). New agent and the right end stay outside it, so they always show.
     const scroller = (children) => h_flex().id("kb-strip").flex_1().min_w(0).gap(compact ? 6 : 10).items_center().overflow_x_scrollbar().children(children);
 
@@ -1841,7 +1949,7 @@ export default class Kanban extends View {
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child(this.s("title")))
         .child(div().text_size(11).text_color(need ? t.blocked : t.dim).child(count))))
       .child(divider(t))
-      .child(scroller([search, buttonGroup(t, [this.detailButton(t, iconOnly)])]))
+      .child(scroller([search, this.groupControl(t), buttonGroup(t, [this.detailButton(t, iconOnly)])]))
       .child(settingsButton)
       .child(divider(t))
       .child(newAgent)
