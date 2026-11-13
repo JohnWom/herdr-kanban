@@ -1,4 +1,4 @@
-// Visual pieces of the Kanban mod: icon buttons, chips, a segmented control and the search box.
+// Visual pieces of the Kanban mod: icon buttons, chips, a segmented control, the search box and a text field.
 import { div, svg, image } from "gpui-kit";
 import { h_flex, Input } from "gpui-base";
 import { settings } from "herdr";
@@ -68,6 +68,14 @@ export function searchBox(t, id, state, { width = 220, onClear } = {}) {
     .when(typed && Boolean(onClear), (e) => e.child(div().id(`${id}-clear`).size(18).flex_none().flex().items_center().justify_center()
       .rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => onClear(cx))
       .child(svg(icon("close")).size(11).text_color(t.muted))));
+}
+
+/** A text field as wide as its row, for a short text such as a name. */
+export function textField(t, id, state) {
+  return h_flex().id(id).h(32).w_full().px(10).items_center().rounded(8)
+    .bg(t.background).border_1().border_color(t.input).cursor_text()
+    .on_mouse_down("left", stop)
+    .child(Input.new(state).h_full().flex_1().min_w(0).text_size(13).text_color(t.foreground));
 }
 
 /** A small rounded label with an optional icon. */
