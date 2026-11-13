@@ -25,10 +25,9 @@ export function iconButton(t, id, name, onClick, { active = false, color, toolti
     .child(svg(icon(name)).size(glyph).text_color(fg));
 }
 
-/** A column toggle in the top bar: a colored dot, the name and the card count.
- *  `compact`: no name (the tooltip has it). */
-export function columnChip(t, id, { label, color, count, on, tooltip, compact = false }, onClick) {
-  return h_flex().id(id).h(28).px(compact ? 8 : 11).gap(compact ? 5 : 7).flex_none().items_center().rounded(14).text_size(12).cursor_pointer()
+/** A column toggle (in the gear menu): a colored dot, the name and the card count. */
+export function columnChip(t, id, { label, color, count, on, tooltip }, onClick) {
+  return h_flex().id(id).h(28).px(11).gap(7).flex_none().items_center().rounded(14).text_size(12).cursor_pointer()
     .border_1().border_color(on ? tint(color, "66") : t.border)
     .when(on, (e) => e.bg(tint(color, "1c")))
     .text_color(on ? t.foreground : t.dim)
@@ -37,12 +36,12 @@ export function columnChip(t, id, { label, color, count, on, tooltip, compact = 
     .on_mouse_down("left", stop)
     .on_click((_e, cx) => onClick(cx))
     .child(div().size(7).rounded(4).flex_none().when(on, (e) => e.bg(color)).when(!on, (e) => e.border_1().border_color(t.dim)))
-    .when(!compact, (e) => e.child(div().when(!on, (e) => e.line_through()).child(label)))
+    .child(div().when(!on, (e) => e.line_through()).child(label))
     .child(div().h(16).px(6).rounded(8).flex().items_center().text_size(10).font_semibold()
       .bg(on ? tint(color, "33") : tint(t.foreground, "14")).text_color(on ? color : t.dim).child(String(count)));
 }
 
-/** A pill-shaped switch between a few views. Items: { id, label, symbol, active, tooltip, onClick }.
+/** A pill-shaped switch between a few views or values. Items: { id, label, symbol?, active, tooltip, onClick }.
  *  An item with no label shows only its icon. */
 export function segmented(t, items) {
   return h_flex().h(32).flex_none().p(3).gap(2).items_center().rounded(10)
@@ -54,7 +53,7 @@ export function segmented(t, items) {
         .when(!it.active, (e) => e.text_color(t.muted).hover((s) => s.bg(t.hover)))
         .on_mouse_down("left", stop)
         .on_click((_e, cx) => it.onClick(cx))
-        .child(svg(icon(it.symbol)).size(13).flex_none().text_color(it.active ? t.accent : t.dim))
+        .when(Boolean(it.symbol), (e) => e.child(svg(icon(it.symbol)).size(13).flex_none().text_color(it.active ? t.accent : t.dim)))
         .when(Boolean(it.label), (e) => e.child(it.label))));
 }
 
@@ -97,7 +96,7 @@ export function machineChip(t, id, machine, { height = 20, text = 11 } = {}) {
 /** A button for a side panel, a tab or a command: an icon (a path in the Herdr home: `.svg` is tinted,
  *  anything else is a picture) and a name. Lit while `on`. `iconOnly`: no name (the tooltip has it).
  *  `menu`: a small arrow after the name, for a button that opens a menu. */
-export function panelButton(t, id, symbolPath, label, on, onClick, tooltip = "", iconOnly = false, spin = false, menu = false) {
+export function panelButton(t, id, symbolPath, label, on, onClick, tooltip = "", iconOnly = false, menu = false) {
   const tip = tooltip || (iconOnly ? label : "");
   const glyph = String(symbolPath).endsWith(".svg") ? svg(symbolPath).size(14).flex_none() : image(symbolPath).size(14).flex_none();
   return h_flex().id(id).h(26).px(iconOnly ? 6 : 9).gap(6).flex_none().items_center().rounded(7).text_size(12).cursor_pointer()
@@ -106,7 +105,7 @@ export function panelButton(t, id, symbolPath, label, on, onClick, tooltip = "",
     .when(!on, (e) => e.text_color(t.muted).hover((s) => s.bg(t.hover)))
     .on_mouse_down("left", stop)
     .on_click((_e, cx) => onClick(cx))
-    .child(spin ? glyph.spin(900) : glyph)
+    .child(glyph)
     .when(!iconOnly, (e) => e.child(label))
     .when(menu, (e) => e.gap(iconOnly ? 2 : 5).child(svg(icon("chevron-down")).size(10).flex_none().text_color(on ? t.accent : t.dim)));
 }
