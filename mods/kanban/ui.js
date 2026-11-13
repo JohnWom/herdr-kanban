@@ -134,18 +134,19 @@ export function divider(t, inner = false) {
   return div().w(1).h(inner ? 14 : 20).mx(inner ? 2 : 0).flex_none().bg(tint(t.foreground, "26"));
 }
 
-/** A text button. `iconOnly` (with a `symbol`): no label (the tooltip has it). */
-export function button(t, id, label, onClick, { primary = false, symbol, tooltip = "", iconOnly = false } = {}) {
+/** A text button. `iconOnly` (with a `symbol`): no label (the tooltip has it). `disabled`: dim and inert. */
+export function button(t, id, label, onClick, { primary = false, symbol, tooltip = "", iconOnly = false, disabled = false } = {}) {
   const bare = iconOnly && Boolean(symbol);
   const tip = tooltip || (bare ? label : "");
   return h_flex().id(id).h(32).px(bare ? 9 : 14).gap(7).flex_none().max_w(200).items_center().rounded(9).text_size(12).font_semibold()
     .when(Boolean(tip), (e) => e.tooltip(tip))
-    .border_1().border_color(primary ? t.accent : t.border)
-    .bg(primary ? tint(t.accent, "26") : tint(t.foreground, "0f"))
-    .text_color(primary ? t.accent : t.muted)
-    .cursor_pointer().hover((s) => s.bg(primary ? tint(t.accent, "40") : t.hover))
+    .border_1().border_color(primary && !disabled ? t.accent : t.border)
+    .bg(disabled ? tint(t.foreground, "0a") : primary ? tint(t.accent, "26") : tint(t.foreground, "0f"))
+    .text_color(disabled ? t.dim : primary ? t.accent : t.muted)
     .on_mouse_down("left", stop)
-    .on_click((_e, cx) => onClick(cx))
+    .when(!disabled, (e) => e
+      .cursor_pointer().hover((s) => s.bg(primary ? tint(t.accent, "40") : t.hover))
+      .on_click((_e, cx) => onClick(cx)))
     .when(Boolean(symbol), (e) => e.child(svg(icon(symbol)).size(14).flex_none()))
     .when(!bare, (e) => e.child(div().truncate().child(label)));
 }
