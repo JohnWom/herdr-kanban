@@ -51,38 +51,25 @@
           "gap": 12,
           "children": [
             {
-              "id": "view",
-              "type": "stack",
-              "active": "board-view",
+              "id": "board",
+              "type": "block",
+              "content": { "mod": "kanban", "props": { "part": "board" } },
+              "min": 160
+            },
+            {
+              "id": "detail",
+              "type": "column",
               "children": [
                 {
-                  "id": "board-view",
-                  "type": "row",
-                  "gap": 12,
-                  "children": [
-                    {
-                      "id": "board",
-                      "type": "block",
-                      "content": { "mod": "kanban", "props": { "part": "board" } },
-                      "min": 160
-                    },
-                    {
-                      "id": "detail",
-                      "type": "block",
-                      "content": { "agent": "focused" },
-                      "size": { "px": 460 },
-                      "min": 200,
-                      "max": 4000,
-                      "background": "background",
-                      "border": { "width": 1, "color": "border" },
-                      "radius": 14,
-                      "shadow": "md"
-                    }
-                  ]
+                  "id": "detail-head",
+                  "type": "block",
+                  "content": { "mod": "kanban", "props": { "part": "tab-head" } },
+                  "size": { "px": 36 }
                 },
                 {
-                  "id": "tabs-view",
+                  "id": "detail-tab",
                   "type": "block",
+                  "padding": 8,
                   "content": {
                     "tab": "active",
                     "pane": {
@@ -101,7 +88,15 @@
                     }
                   }
                 }
-              ]
+              ],
+              "size": { "px": 460 },
+              "min": 200,
+              "max": 4000,
+              "resizable": false,
+              "background": "background",
+              "border": { "width": 1, "color": "border" },
+              "radius": 14,
+              "shadow": "md"
             },
             {
               "id": "panel",
