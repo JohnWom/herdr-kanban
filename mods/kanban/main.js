@@ -9,6 +9,7 @@
 //   "card-menu" the right-click menu of a card, a popup (the board opens it, see openCardMenu).
 //   "card-rename" the field that renames the tab of a card, a popup (the card menu opens it, see openRename).
 //   "new-dialog" the dialog that starts a session: machine, space, program, tab name (the bar and the card menu open it, see openNew).
+//   "columns-menu" every column with a tick to show or hide it, a popup (the board opens it, see openColumns).
 //   "gear-menu" the menu of the gear button: the look of the board, the columns, Herdr's settings, Bar buttons and PowerMods,
 //               a popup (the bar opens it, see openGear).
 //   "buttons-menu" the editor of the order and the visibility of the panel buttons, a popup (the bar opens it, see openButtons).
@@ -45,7 +46,7 @@ const KEY_PANEL_OPEN = "kanban.panelOpen"; // "auto" | "side" | "dialog"; absent
 const KEY_PANEL_DIALOG = "kanban.panelDialog"; // { id, panel }: the panel dialog that is open now; null: none
 const KEY_GROUP = "kanban.group"; // "none" | "machine" | "space"; absent: none
 const KEY_COLLAPSED = "kanban.collapsed"; // ids of the folded lanes: "machine:<name>" ("machine:" here), "space:<id>", "other"
-// Where the panel buttons open their panel. The button in the bar goes auto -> side -> dialog -> auto.
+// Where the panel buttons open their panel, set in the gear menu. The command kanban.panel-open goes auto -> side -> dialog -> auto.
 // Auto opens a dialog when the bar is narrower than PANEL_NARROW px (a small monitor), else the side panel.
 const PANEL_OPENS = ["auto", "side", "dialog"];
 const PANEL_NARROW = 1600;
@@ -76,7 +77,7 @@ const DENSITIES = ["auto", "compact", "normal"];
 const CARD_VIEWS = ["auto", "summary", "full"];
 // Swimlanes, set in the bar; the icon of each choice.
 const GROUPINGS = ["none", "machine", "space"];
-const GROUP_ICONS = { none: "board", machine: "server", space: "folder" };
+const GROUP_ICONS = { none: "lanes-none", machine: "lanes-machine", space: "lanes-space" };
 const BAR_WIDE = 1800;
 const LABELS_WIDE = 2250; // from this bar width the panel buttons show their names, not only icons
 const COLUMN_WIDE = 220;
@@ -119,7 +120,8 @@ const PANELS = [
 // with the full name of each panel. A group that is not here uses its id as its name and the icon of its first panel.
 // The same as GROUPS in mods/tabs-dock.
 const PANEL_GROUPS = { git: { label: "Git", icon: icon("git") } };
-const MENU_W = 220, MENU_PAD = 5, MENU_HEAD = 26, MENU_ROW = 32; // px: the menu of a group button
+const MENU_W = 220, MENU_PAD = 5, MENU_HEAD = 26, MENU_ROW = 32; // px: the menu of a group button (and of the columns)
+const MORE_W = 104; // px: the chip after the column heads that names the hidden columns
 const CLONE_W = 270; // px: the menu of the duplicate button of a card
 const CARD_MENU_W = 250; // px: the right-click menu of a card
 const RENAME_W = 300, RENAME_ROW = 40; // px: the rename popup (its width and its field row)
@@ -197,14 +199,14 @@ const COLUMNS = [
 
 const STR = {
   en: {
-    title: "Agents", search: "Search agents…",
+    search: "Search agents…",
     idle: "Idle", blocked: "Needs you", working: "Working", done: "Done", waiting: "Waiting",
     subagents: (n) => (n === 1 ? "1 subagent" : `${n} subagents`),
     commands: (n) => (n === 1 ? "1 command" : `${n} commands`),
     waitingOn: "Waiting column on: agents that wait for subagents or background commands get their own column. Click to turn it off.",
     waitingOff: "Waiting column off: those agents show as Done or Idle. Click to turn it on.",
     notWaiting: "Not waiting: show it as Done or Idle",
-    agents: (n) => (n === 1 ? "1 agent" : `${n} agents`), needYou: "{n} need you",
+    agents: (n) => (n === 1 ? "1 agent" : `${n} agents`),
     scopeAllTip: "Showing every space. Click to show only {name}, the space you are in now.",
     scopeSpaceTip: "Showing only {name}. Click to show every space.",
     detailOn: "Hide the tab panel", detailOff: "Show the tab panel", agentLabel: "Agent",
@@ -213,6 +215,7 @@ const STR = {
     newAgent: "New agent", hide: "Hide this column", showCol: "Show {name}", hideCol: "Hide {name}",
     emptyCol: "No agents here", emptyColSearch: "No match",
     allHidden: "All columns are hidden", allHiddenHint: "Show a column to see its agents.", showAll: "Show all columns",
+    moreCols: "＋ {n} hidden", moreColsTip: "Hidden: {names}. Click to choose the columns.",
     none: "No agents yet", noneHint: "Start an agent with the New agent button. It appears here as a card, and moves between columns when its status changes.",
     pin: "Pin to the top of its column", unpin: "Unpin",
     now: "just now", min: "{n} min ago", hour: "{n} h ago", day: "{n} d ago",
@@ -233,7 +236,7 @@ const STR = {
     columnsTitle: "Columns", orderHint: "The arrows in a column header change the order.",
     opens_auto: "Auto", opens_side: "Side panel", opens_dialog: "Dialog",
     opensNowDialog: "{mode} (dialog now)", opensNowSide: "{mode} (side panel now)",
-    opensTip: "Panels open in: {mode}. Click to switch to {next}.",
+    opensLabel: "Panels open in",
     toSide: "Open in the side panel", toTab: "Open in a tab", closeDialog: "Close",
     rename: "Rename the tab", duplicate: "Duplicate this agent", cloneHere: "Duplicate in this space", cloneWorktree: "Duplicate in a new worktree…",
     cloneTitle: "Duplicate {name}", cloneFail: "Kanban: duplicate", noCommand: "The command of this agent is not known.",
@@ -252,14 +255,14 @@ const STR = {
     group_none: "One board, no lanes", group_machine: "A lane per machine", group_space: "A lane per space", other: "Other",
   },
   pt: {
-    title: "Agentes", search: "Buscar agentes…",
+    search: "Buscar agentes…",
     idle: "Ociosos", blocked: "Precisam de você", working: "Trabalhando", done: "Concluídos", waiting: "Aguardando",
     subagents: (n) => (n === 1 ? "1 subagente" : `${n} subagentes`),
     commands: (n) => (n === 1 ? "1 comando" : `${n} comandos`),
     waitingOn: "Coluna Aguardando ligada: agentes que esperam subagentes ou comandos em segundo plano ganham uma coluna própria. Clique para desligar.",
     waitingOff: "Coluna Aguardando desligada: esses agentes aparecem como Concluídos ou Ociosos. Clique para ligar.",
     notWaiting: "Não está esperando: mostrar como Concluído ou Ocioso",
-    agents: (n) => (n === 1 ? "1 agente" : `${n} agentes`), needYou: "{n} precisam de você",
+    agents: (n) => (n === 1 ? "1 agente" : `${n} agentes`),
     scopeAllTip: "Mostrando todos os espaços. Clique para mostrar só {name}, o espaço em que você está.",
     scopeSpaceTip: "Mostrando só {name}. Clique para mostrar todos os espaços.",
     detailOn: "Ocultar o painel da aba", detailOff: "Mostrar o painel da aba", agentLabel: "Agente",
@@ -268,6 +271,7 @@ const STR = {
     newAgent: "Novo agente", hide: "Ocultar esta coluna", showCol: "Mostrar {name}", hideCol: "Ocultar {name}",
     emptyCol: "Nenhum agente aqui", emptyColSearch: "Nada encontrado",
     allHidden: "Todas as colunas estão ocultas", allHiddenHint: "Mostre uma coluna para ver os agentes dela.", showAll: "Mostrar todas as colunas",
+    moreCols: "＋ {n} ocultas", moreColsTip: "Ocultas: {names}. Clique para escolher as colunas.",
     none: "Nenhum agente ainda", noneHint: "Inicie um agente com o botão Novo agente. Ele aparece aqui como um cartão e muda de coluna quando o status muda.",
     pin: "Fixar no topo da coluna", unpin: "Desafixar",
     now: "agora", min: "há {n} min", hour: "há {n} h", day: "há {n} d",
@@ -288,7 +292,7 @@ const STR = {
     columnsTitle: "Colunas", orderHint: "As setas no cabeçalho de uma coluna mudam a ordem.",
     opens_auto: "Auto", opens_side: "Painel lateral", opens_dialog: "Diálogo",
     opensNowDialog: "{mode} (diálogo agora)", opensNowSide: "{mode} (painel lateral agora)",
-    opensTip: "Os painéis abrem em: {mode}. Clique para mudar para {next}.",
+    opensLabel: "Painéis abrem em",
     toSide: "Abrir no painel lateral", toTab: "Abrir numa aba", closeDialog: "Fechar",
     rename: "Renomear a tab", duplicate: "Duplicar este agente", cloneHere: "Duplicar neste espaço", cloneWorktree: "Duplicar num novo worktree…",
     cloneTitle: "Duplicar {name}", cloneFail: "Kanban: duplicar", noCommand: "O comando deste agente não é conhecido.",
@@ -367,7 +371,7 @@ export default class Kanban extends View {
   init(given, cx) {
     // Read props once and keep them: props() in a later callback can answer for another copy.
     this.props = (given && Object.keys(given).length ? given : props()) || {};
-    const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "new-dialog", "gear-menu", "buttons-menu"];
+    const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "new-dialog", "columns-menu", "gear-menu", "buttons-menu"];
     this.part = ["bar", "tab-head", ...overlays].includes(this.props.part) ? this.props.part : "board";
     if (this.part === "tab-head") return;
     if (overlays.includes(this.part)) {
@@ -415,7 +419,7 @@ export default class Kanban extends View {
           await this.loadEntries(cx);
         }
       });
-      // "kanban.panel-open" steps where the panels open, as the button does. "kanban.panel-<id>" opens or
+      // "kanban.panel-open" steps where the panels open, auto -> side -> dialog. "kanban.panel-<id>" opens or
       // closes the panel <id> (files, changes, or an id of dock/panels.json), as its button does.
       // "kanban.group-<id>" opens the menu of a group button (kanban.group-git). "kanban.gear" does what the
       // gear button does. "kanban.buttons" opens the editor of the bar buttons. "kanban.maximize" maximizes
@@ -480,6 +484,21 @@ export default class Kanban extends View {
       order.splice(before ? order.indexOf(before.id) + 1 : 0, 0, c.id);
     });
     return order.map((id) => known.find((c) => c.id === id));
+  }
+
+  /** The toggles of the gear menu and the columns menu: each column, shown or not, its card count from `counts`. */
+  columnToggles(counts = {}) {
+    const hidden = this.hidden();
+    return this.columns().map((c) => {
+      const on = !hidden.has(c.id), name = this.s(c.id);
+      return { c, on, name, count: counts[c.id] ?? 0, tooltip: this.s(on ? "hideCol" : "showCol", { name }), flip: () => this.toggleColumn(c.id) };
+    });
+  }
+
+  /** The card count of each column now, for the menus that list the columns. */
+  columnCounts() {
+    const shown = this.visible();
+    return Object.fromEntries(COLUMNS.map((c) => [c.id, shown.filter((a) => a.status === c.id).length]));
   }
 
   // ---- agents that wait for subagents --------------------------------------------
@@ -959,14 +978,35 @@ export default class Kanban extends View {
     if (this.overlay) closeOverlay(this.overlay);
   }
 
+  /** Opens the columns menu at the pointer (the chip of the hidden columns, a right click on a column head). */
+  openColumns() {
+    openOverlay({ mod: "kanban", kind: "popup", width: MENU_W, height: MENU_PAD * 2 + MENU_HEAD + this.columns().length * MENU_ROW,
+      props: { part: "columns-menu", lang: this.lang, waiting: this.props.waiting, counts: this.columnCounts() } });
+  }
+
+  /** The columns menu: one row per column (its dot, name and card count, a tick while it shows). A click shows or
+   *  hides the column and the menu stays open, as the chips of the gear menu. */
+  columnsMenu(t) {
+    const row = (it) => h_flex().id(`kb-cols-${it.c.id}`).w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6).cursor_pointer()
+      .text_size(13).text_color(it.on ? t.foreground : t.dim).hover((s) => s.bg(t.hover)).tooltip(it.tooltip)
+      .on_click((_e, cx) => { cx.stop_propagation(); it.flip(); })
+      .child(div().size(8).rounded(4).flex_none().when(it.on, (e) => e.bg(statusColor(t, it.c.id)))
+        .when(!it.on, (e) => e.border_1().border_color(t.dim)))
+      .child(div().flex_1().min_w(0).truncate().child(it.name))
+      .child(div().flex_none().text_size(11).text_color(t.dim).child(String(it.count)))
+      .child(div().w(13).flex_none().when(it.on, (e) => e.child(svg(icon("tick")).size(13).text_color(t.accent))));
+    return v_flex().id("kb-cols-root").w_full().p(MENU_PAD)
+      .child(h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim).child(this.s("columnsTitle")))
+      .children(this.columnToggles(this.props.counts).map(row));
+  }
+
   /** The gear button opens a menu: the look of the board, the columns, Herdr's settings, the editor of the bar
    *  buttons and, with the mods-hub installed, the PowerMods dialog. The card counts are those of now. */
   openGear() {
-    const shown = this.visible();
-    const counts = Object.fromEntries(COLUMNS.map((c) => [c.id, shown.filter((a) => a.status === c.id).length]));
-    const given = { part: "gear-menu", lang: this.lang, waiting: this.props.waiting, compact: this.compact(this.barW, BAR_WIDE), counts };
+    const given = { part: "gear-menu", lang: this.lang, waiting: this.props.waiting, compact: this.compact(this.barW, BAR_WIDE),
+      narrow: typeof this.barW === "number" && this.barW < PANEL_NARROW, counts: this.columnCounts() };
     // Room for every column, so the menu still fits after the Waiting column is turned on.
-    const height = (hub) => MENU_PAD * 2 + 2 * MENU_HEAD + 3 * GEAR_ROW + (1 + COLUMNS.length + (hub ? 3 : 2)) * MENU_ROW + GEAR_HINT + GEAR_SEP;
+    const height = (hub) => MENU_PAD * 2 + 2 * MENU_HEAD + 4 * GEAR_ROW + (1 + COLUMNS.length + (hub ? 3 : 2)) * MENU_ROW + GEAR_HINT + GEAR_SEP;
     const open = (hub) => openOverlay({ mod: "kanban", kind: "popup", width: GEAR_W, height: height(hub), props: { ...given, hub } });
     readTextFile(`${appHome()}/mods/mods-hub/mod.json`).then((text) => open(text != null), () => open(false));
   }
@@ -1024,7 +1064,7 @@ export default class Kanban extends View {
    *  shared("mods-hub")). mod.open toggles: an open dialog closes. "Bar buttons" asks the bar for the editor
    *  ("kanban.buttons"): the bar knows the buttons. The links close the menu. */
   gearMenu(t) {
-    const p = this.props, counts = p.counts ?? {}, hidden = this.hidden();
+    const p = this.props;
     const go = (fn) => { fn(); if (this.overlay) closeOverlay(this.overlay); };
     const head = (label) => h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim).child(label);
     const row = (id, symbol, label, fn) => h_flex().id(`kb-gear-${id}`).w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6)
@@ -1040,18 +1080,16 @@ export default class Kanban extends View {
     const choice = (id, values, now, key, tip) => segmented(t, values.map((v) => ({ id: `kb-gear-${id}-${v}`, label: this.s(`${id}_${v}`),
       active: v === now, tooltip: v === "auto" ? tip : "", onClick: () => setShared(key, v) })));
     const density = this.s(p.compact ? "densityNow" : "densityNowNormal", { mode: this.s("density_auto") });
+    const opens = this.s(p.narrow ? "opensNowDialog" : "opensNowSide", { mode: this.s("opens_auto") });
     const waiting = this.waitingOn();
-    const chip = (c) => {
-      const on = !hidden.has(c.id), name = this.s(c.id);
-      return h_flex().w_full().h(MENU_ROW).pl(6).flex_none().items_center()
-        .child(columnChip(t, `kb-chip-${c.id}`, { label: name, color: statusColor(t, c.id), on, count: counts[c.id] ?? 0,
-          tooltip: this.s(on ? "hideCol" : "showCol", { name }) }, () => this.toggleColumn(c.id)));
-    };
+    const chip = (it) => h_flex().w_full().h(MENU_ROW).pl(6).flex_none().items_center()
+      .child(columnChip(t, `kb-chip-${it.c.id}`, { label: it.name, color: statusColor(t, it.c.id), on: it.on, count: it.count, tooltip: it.tooltip }, it.flip));
     return v_flex().id("kb-gear-root").w_full().p(MENU_PAD)
       .child(head(this.s("gearTitle")))
       .child(setting("width", "width", this.s("widthLabel"), this.widthControl(t)))
       .child(setting("density", "density", this.s("densityLabel"), choice("density", DENSITIES, this.density(), KEY_DENSITY, density)))
       .child(setting("cards", "cards", this.s("cardsLabel"), choice("cards", CARD_VIEWS, this.cardView(), KEY_CARDS, this.s("cardsAuto"))))
+      .child(setting("opens", "dialog", this.s("opensLabel"), choice("opens", PANEL_OPENS, this.panelOpen(), KEY_PANEL_OPEN, opens)))
       .child(h_flex().id("kb-gear-waiting").w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6).cursor_pointer()
         .text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover)).tooltip(this.s(waiting ? "waitingOn" : "waitingOff"))
         .on_click((_e, cx) => { cx.stop_propagation(); this.toggleWaiting(); })
@@ -1059,7 +1097,7 @@ export default class Kanban extends View {
         .child(div().flex_1().min_w(0).truncate().child(this.s("waitingLabel")))
         .when(waiting, (e) => e.child(svg(icon("tick")).size(13).flex_none().text_color(t.accent))))
       .child(head(this.s("columnsTitle")))
-      .children(this.columns().map(chip))
+      .children(this.columnToggles(p.counts).map(chip))
       .child(h_flex().w_full().h(GEAR_HINT).px(10).flex_none().items_center()
         .child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child(this.s("orderHint"))))
       .child(div().w_full().h(1).my(4).flex_none().bg(t.border))
@@ -1623,6 +1661,7 @@ export default class Kanban extends View {
     // Compact: the arrows and the eye show only while the pointer is on the header, so the name has room.
     const tools = !compact || this.hoverCol === c.id;
     return h_flex().id(`head-${c.id}`).h(compact ? 40 : 48).flex_none().px(compact ? 8 : 12).gap(compact ? 4 : 9).items_center()
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openColumns(); })
       .when(compact, (e) => e.on_hover((hovered, cx) => {
         const next = hovered ? c.id : this.hoverCol === c.id ? null : this.hoverCol;
         if (next !== this.hoverCol) { this.hoverCol = next; cx.notify(); }
@@ -1635,6 +1674,17 @@ export default class Kanban extends View {
         .child(this.moveButton(t, c, -1, compact))
         .child(this.moveButton(t, c, 1, compact))
         .child(iconButton(t, `hide-${c.id}`, "eye-off", () => this.toggleColumn(c.id), { tooltip: this.s("hide"), size: btn, glyph: compact ? 12 : 14, color: t.dim })));
+  }
+
+  /** "＋ N hidden" after the column heads, as tall as a head: it opens the columns menu. */
+  moreCols(t, more, compact) {
+    return h_flex().w(MORE_W).h(compact ? 42 : 50).flex_none().items_center()
+      .child(h_flex().id("kb-more-cols").h(26).px(10).min_w(0).items_center().rounded(13).cursor_pointer()
+        .border_1().border_dashed().border_color(t.border).text_size(12).text_color(t.muted)
+        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(this.s("moreColsTip", { names: more.map((c) => this.s(c.id)).join(", ") }))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.openColumns(); })
+        .child(div().truncate().child(this.s("moreCols", { n: more.length }))));
   }
 
   /** The cards of `list` in `el`, with the padding and the gap of the density. */
@@ -1678,6 +1728,7 @@ export default class Kanban extends View {
     const shown = this.visible();
     this.shown = shownTab().id; // the cards of the tab in the panel show as selected
     const cols = this.columns().filter((c) => !hidden.has(c.id));
+    const more = this.columns().filter((c) => hidden.has(c.id));
     const ids = cols.map((c) => c.id);
     const by = this.grouping();
     // Only the cards of the shown columns, so a lane with none of them goes away.
@@ -1688,7 +1739,7 @@ export default class Kanban extends View {
       return this.emptyState(t, this.s("allHidden"), this.s("allHiddenHint"),
         button(t, "kb-show-all", this.s("showAll"), () => setShared(KEY_HIDDEN, []), { primary: true, symbol: "eye" }));
     }
-    const compact = this.compact(this.boardW, cols.length * COLUMN_WIDE + (cols.length - 1) * GAP);
+    const compact = this.compact(this.boardW, cols.length * COLUMN_WIDE + (cols.length - 1) * GAP + (more.length ? GAP + MORE_W : 0));
     // Places in the row: one column each. In compact density the columns of a group (Working with
     // Waiting, Done with Idle) share one place, one under the other, at the place of the first of
     // them in the order.
@@ -1703,20 +1754,22 @@ export default class Kanban extends View {
     // and then give each place exactly that width.
     const n = places.length;
     const min = compact ? MIN_COLUMN_COMPACT : MIN_COLUMN, gap = compact ? GAP_COMPACT : GAP;
-    const fixed = typeof this.boardW === "number" && this.boardW < n * min + (n - 1) * gap;
+    const width = n * min + (n - 1) * gap + (more.length ? gap + MORE_W : 0);
+    const fixed = typeof this.boardW === "number" && this.boardW < width;
     const opts = { compact, fixed, summary: this.summary(compact) };
-    if (lanes) return this.laneBoard(t, lanes, by, places, shown, searching, { ...opts, gap, width: n * min + (n - 1) * gap });
+    if (lanes) return this.laneBoard(t, lanes, by, places, shown, searching, { ...opts, gap, width, more });
     return h_flex().id("kb-columns").size_full().min_h(0).gap(gap)
       .when(fixed, (e) => e.overflow_x_scrollbar())
       .children(places.map((p) => p.length === 1
         ? this.column(p[0], inColumn(shown, p[0].id), t, searching, opts)
         : this.sized(v_flex().id(`place-${p[0].id}`).h_full().min_h(0).gap(gap), compact, fixed)
-          .children(p.map((c) => this.column(c, inColumn(shown, c.id), t, searching, { ...opts, stacked: true })))));
+          .children(p.map((c) => this.column(c, inColumn(shown, c.id), t, searching, { ...opts, stacked: true })))))
+      .when(more.length > 0, (e) => e.child(v_flex().h_full().flex_none().child(this.moreCols(t, more, compact))));
   }
 
   /** The board in lanes: the column heads once on top, under them the lanes, which scroll as one list.
    *  A lane row has the places of the board, as wide as the heads, and grows with its tallest column. */
-  laneBoard(t, lanes, by, places, shown, searching, { compact, fixed, summary, gap, width }) {
+  laneBoard(t, lanes, by, places, shown, searching, { compact, fixed, summary, gap, width, more }) {
     const folded = this.collapsed();
     // A row that does not center its children: the boxes of a row stretch to its height.
     const row = () => div().flex().flex_none().gap(gap).when(fixed, (e) => e.w(width)).when(!fixed, (e) => e.w_full());
@@ -1728,7 +1781,7 @@ export default class Kanban extends View {
     const heads = row().items_start().children(places.map((p) => place(p, (c) => {
       const count = inColumn(shown, c.id).length;
       return this.frame(v_flex().id(`col-${c.id}`), c, t, compact, c.id === "blocked" && count > 0).child(this.columnHead(c, count, t, compact));
-    })));
+    }))).when(more.length > 0, (e) => e.child(this.moreCols(t, more, compact)));
     const lane = (g) => {
       const shut = folded.has(g.id);
       const label = by === "machine" ? (g.machine ? null : this.s("thisComputer"))
@@ -1738,7 +1791,7 @@ export default class Kanban extends View {
         .when(!shut, (e) => e.child(row().children(places.map((p) => place(p, (c) => {
           const list = inColumn(g.agents, c.id);
           return this.frame(this.cardStack(v_flex().py(compact ? 7 : 10), list, t, compact, summary), c, t, compact, c.id === "blocked" && list.length > 0);
-        })))));
+        })).when(more.length > 0, (r) => r.pr(gap + MORE_W)))));
     };
     return v_flex().id("kb-board").size_full().min_h(0).gap(gap)
       .when(fixed, (e) => e.overflow_x_scrollbar())
@@ -1807,17 +1860,12 @@ export default class Kanban extends View {
     const folded = arrange(foldGroups(items).map((it) => ({ ...it, id: buttonId(it), entryId: it.id })), prefs.order);
     this.groups = new Map(folded.filter((it) => it.members).map((g) => [g.group, g.members]));
     this.buttonItems = folded.map((it) => (it.members ? { id: it.id, ...this.groupInfo(it.group) } : { id: it.id, label: it.label, icon: it.icon }));
-    const shownItems = folded.filter((it) => !off.has(it.id));
-    if (!folded.length) return [];
-    return [
-      this.panelOpenButton(t), ...(shownItems.length ? [divider(t, true)] : []),
-      ...shownItems.map((it) => {
-        if (!it.members) return panelButton(t, it.key, it.icon, it.label, it.on, () => this.togglePanel(it.entryId), it.tip, iconOnly);
-        const info = this.groupInfo(it.group);
-        return panelButton(t, `kb-group-${it.group}`, info.icon, info.label, it.members.some((m) => m.on), () => this.openGroup(it.group),
-          `${info.label}: ${it.members.map((m) => m.label).join(", ")}`, iconOnly, true);
-      }),
-    ];
+    return folded.filter((it) => !off.has(it.id)).map((it) => {
+      if (!it.members) return panelButton(t, it.key, it.icon, it.label, it.on, () => this.togglePanel(it.entryId), it.tip, iconOnly);
+      const info = this.groupInfo(it.group);
+      return panelButton(t, `kb-group-${it.group}`, info.icon, info.label, it.members.some((m) => m.on), () => this.openGroup(it.group),
+        `${info.label}: ${it.members.map((m) => m.label).join(", ")}`, iconOnly, true);
+    });
   }
 
   /** Shows or hides the tab panel at the right of the board. Hiding a maximized panel brings the board back first. */
@@ -1893,27 +1941,14 @@ export default class Kanban extends View {
         { tooltip: this.s("wider"), size: 24, glyph: 13, color: atMax ? t.dim : t.muted }));
   }
 
-  /** Where the panel buttons open their panel: lit while they open a dialog. The tooltip names the mode and the next one. */
-  panelOpenButton(t) {
-    const v = this.panelOpen(), now = this.dialogNow();
-    const next = PANEL_OPENS[(PANEL_OPENS.indexOf(v) + 1) % PANEL_OPENS.length];
-    const name = (x) => this.s(`opens_${x}`);
-    const mode = v === "auto" ? this.s(now ? "opensNowDialog" : "opensNowSide", { mode: name(v) }) : name(v);
-    return iconButton(t, "kb-panel-open", "dialog", () => this.stepPanelOpen(),
-      { active: now, size: 26, glyph: 14, tooltip: this.s("opensTip", { mode, next: name(next) }) });
-  }
-
   bar(t) {
     this.followAgent(); // the bar shows in both modes, the board not while the panel is maximized
-    const all = agents();
-    const need = all.filter((a) => a.status === "blocked").length;
     const w = window();
     const wbtn = (id, glyph, action) => div().id(id).size(28).flex_none().flex().items_center().justify_center().rounded(7)
       .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
       .on_click(action).child(glyph);
     const win = w?.platform === "windows";
     const compact = this.compact(this.barW, BAR_WIDE);
-    const count = need ? `${this.s("agents", all.length)} · ${this.s("needYou", { n: need })}` : this.s("agents", all.length);
 
     // The bar reads left to right: what to show (search, scope, the lanes, the tab panel) | Settings (the gear menu has the
     // look of the board and the columns) | New agent | the panel group (Files, Changes, dock entries) and the
@@ -1948,14 +1983,9 @@ export default class Kanban extends View {
         const width = Math.round(size.width);
         if (width !== this.barW) { this.barW = width; cx.notify(); }
       })
-      .child(div().id("kb-logo").size(28).rounded(9).flex_none().flex().items_center().justify_center().bg(tint(t.accent, "26"))
-        .when(compact, (e) => e.tooltip(`${this.s("title")} · ${count}`))
-        .child(svg(icon("board")).size(15).text_color(need && compact ? t.blocked : t.accent)))
-      .when(!compact, (e) => e.child(v_flex().flex_none()
-        .child(div().text_size(14).font_semibold().text_color(t.foreground).child(this.s("title")))
-        .child(div().text_size(11).text_color(need ? t.blocked : t.dim).child(count))))
-      .child(divider(t))
       .child(scroller([search, this.groupControl(t), buttonGroup(t, [this.detailButton(t, iconOnly)])]))
+      // Nothing here stops the press, so the window drags by it also while the strip is full.
+      .child(div().w(16).h_full().flex_none())
       .child(settingsButton)
       .child(divider(t))
       .child(newAgent)
@@ -1970,6 +2000,7 @@ export default class Kanban extends View {
     if (this.part === "card-menu") return this.cardMenu(t);
     if (this.part === "card-rename") return this.renameBox(t);
     if (this.part === "new-dialog") return this.newDialog(t);
+    if (this.part === "columns-menu") return this.columnsMenu(t);
     if (this.part === "gear-menu") return this.gearMenu(t);
     if (this.part === "buttons-menu") return this.buttonsMenu(t);
     if (this.part === "tab-head") return this.tabHead(t);
