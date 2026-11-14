@@ -1,7 +1,8 @@
 // Kanban for the Herdr app: every agent is a card in a column by status.
 // One mod, parts chosen by props.part:
 //   "bar"   the top bar: search, filter, grouping, New agent, gear, panel buttons, window buttons.
-//   "board" the columns with the cards; grouped, one swimlane per machine or space under the column heads.
+//   "board" the columns with the cards (the agents, and the tabs with no agent in Terminals); grouped, one swimlane
+//           per machine or space under the column heads.
 //   "tab-head" the head of the tab panel: the tab, its space and machine, the maximize button.
 //   "panel-title" the title row of a panel dialog (the bar opens it, see openDialog).
 //   "group-menu" the menu of a group button of the panel group, a popup (the bar opens it, see openGroup).
@@ -23,12 +24,14 @@ import { agents, spaces, panes, machines, focused, layout, window, theme, props,
 import * as fs from "fs/promises";
 import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pill, button, panelButton, menuArrow, panelGlyph, buttonGroup, divider, stop, machineChip, remoteColor } from "./ui.js";
 
-/** The machine of an agent on another computer: its address is "<machine>/<terminal>". */
-const machineOf = (a) => (String(a?.address ?? "").includes("/") ? a.address.split("/")[0] : null);
+/** The machine of a card on another computer: a terminal card has the machine of its space, an agent's address is
+ *  "<machine>/<terminal>". */
+const machineOf = (a) => (a?.term ? a.machine : String(a?.address ?? "").includes("/") ? a.address.split("/")[0] : null);
 import { WaitingTracker } from "./waiting.js";
 import { inColumn, groupLanes, laneOrder, placesOf, nextCard } from "./lanes.js";
 import { parseFilter, migrateFilter, resolveFilter, applyFilter } from "./filter.js";
 import { pairsOf, stacks, barLook } from "./density.js";
+import { TERMINALS, terminalTabs } from "./terminals.js";
 import { PLACES, axis, placeOf, movePanel } from "./place.js";
 
 /** The icon of an entry of knownAgents: a one-color glyph is tinted, anything else is a picture. */
@@ -98,7 +101,7 @@ const GROUPS = [["working", "waiting"], ["done", "idle"]];
 // "Waiting" is not a status the Herdr app reports: the mod derives it for a Claude Code agent that shows
 // as Done or Idle while background subagents or shell commands still run (see waiting.js). It has no theme color of its own.
 const WAITING = "waiting";
-const statusColor = (t, status) => (status === WAITING ? t.ansi5 || t.accent : t[status] ?? t.idle);
+const statusColor = (t, status) => (status === WAITING ? t.ansi5 || t.accent : status === TERMINALS ? t.muted : t[status] ?? t.idle);
 
 // Left by older versions: a core terminal with this name and the label kanban.shell=1, and a terminal block
 // "shell" in a column "board-main" with the board. The bar removes the block, and the terminal once it has ended (see migrate, endShell).
@@ -203,20 +206,21 @@ async function cloneArgv(address, programKey, machine) {
   return known ? [known.run[0], ...freshArgs(known.key, known.run.slice(1))] : null;
 }
 
-// The default order: needs you, working, waiting, done, idle. The arrows in a column header change it,
-// and shared(KEY_ORDER) keeps the new order.
+// The default order: needs you, working, waiting, done, idle, then the tabs with no agent. The arrows in a column
+// header change it, and shared(KEY_ORDER) keeps the new order.
 const COLUMNS = [
   { id: "blocked", symbol: "bell" },
   { id: "working", symbol: "zap" },
   { id: WAITING, symbol: "hourglass" },
   { id: "done", symbol: "check" },
   { id: "idle", symbol: "moon" },
+  { id: TERMINALS, symbol: "terminal" },
 ];
 
 const STR = {
   en: {
     search: "Search agents…",
-    idle: "Idle", blocked: "Needs you", working: "Working", done: "Done", waiting: "Waiting",
+    idle: "Idle", blocked: "Needs you", working: "Working", done: "Done", waiting: "Waiting", terminals: "Terminals",
     subagents: (n) => (n === 1 ? "1 subagent" : `${n} subagents`),
     commands: (n) => (n === 1 ? "1 command" : `${n} commands`),
     waitingOn: "Waiting column on: agents that wait for subagents or background commands get their own column. Click to turn it off.",
@@ -232,7 +236,7 @@ const STR = {
     maximize: "Maximize the panel: hide the board", restore: "Restore the board", menuMaximize: "Open maximized",
     tabNumber: "Tab {n}", noTab: "No tab open: click a card",
     newAgent: "New agent", hide: "Hide this column", showCol: "Show {name}", hideCol: "Hide {name}",
-    emptyCol: "No agents here", emptyColSearch: "No match",
+    emptyCol: "No agents here", emptyTerminals: "No tab without an agent", emptyColSearch: "No match",
     allHidden: "All columns are hidden", allHiddenHint: "Show a column to see its agents.", showAll: "Show all columns",
     moreCols: "＋ {n} hidden", moreColsTip: "Hidden: {names}. Click to choose the columns.",
     none: "No agents yet", noneHint: "Start an agent with the New agent button. It appears here as a card, and moves between columns when its status changes.",
@@ -280,7 +284,7 @@ const STR = {
   },
   pt: {
     search: "Buscar agentes…",
-    idle: "Ociosos", blocked: "Precisam de você", working: "Trabalhando", done: "Concluídos", waiting: "Aguardando",
+    idle: "Ociosos", blocked: "Precisam de você", working: "Trabalhando", done: "Concluídos", waiting: "Aguardando", terminals: "Terminais",
     subagents: (n) => (n === 1 ? "1 subagente" : `${n} subagentes`),
     commands: (n) => (n === 1 ? "1 comando" : `${n} comandos`),
     waitingOn: "Coluna Aguardando ligada: agentes que esperam subagentes ou comandos em segundo plano ganham uma coluna própria. Clique para desligar.",
@@ -296,7 +300,7 @@ const STR = {
     maximize: "Maximizar o painel: ocultar o quadro", restore: "Restaurar o quadro", menuMaximize: "Abrir maximizado",
     tabNumber: "Aba {n}", noTab: "Nenhuma aba aberta: clique num cartão",
     newAgent: "Novo agente", hide: "Ocultar esta coluna", showCol: "Mostrar {name}", hideCol: "Ocultar {name}",
-    emptyCol: "Nenhum agente aqui", emptyColSearch: "Nada encontrado",
+    emptyCol: "Nenhum agente aqui", emptyTerminals: "Nenhuma aba sem agente", emptyColSearch: "Nada encontrado",
     allHidden: "Todas as colunas estão ocultas", allHiddenHint: "Mostre uma coluna para ver os agentes dela.", showAll: "Mostrar todas as colunas",
     moreCols: "＋ {n} ocultas", moreColsTip: "Ocultas: {names}. Clique para escolher as colunas.",
     none: "Nenhum agente ainda", noneHint: "Inicie um agente com o botão Novo agente. Ele aparece aqui como um cartão e muda de coluna quando o status muda.",
@@ -518,13 +522,15 @@ export default class Kanban extends View {
 
   /** All the columns, left to right. Waiting is one of them only while the feature is on. A saved order
    *  keeps only known ids; a column it does not list goes right after the column that comes before it
-   *  in COLUMNS (so Waiting lands under Working for a person who saved an order before it existed). */
+   *  in COLUMNS (so Waiting lands under Working for a person who saved an order before it existed),
+   *  Terminals at the end. */
   columns() {
     const known = COLUMNS.filter((c) => c.id !== WAITING || this.waitingOn());
     const saved = shared(KEY_ORDER);
     const order = Array.isArray(saved) ? saved.filter((id, i) => known.some((c) => c.id === id) && saved.indexOf(id) === i) : [];
     known.forEach((c, i) => {
       if (order.includes(c.id)) return;
+      if (c.id === TERMINALS) { order.push(c.id); return; }
       const before = known.slice(0, i).reverse().find((p) => order.includes(p.id));
       order.splice(before ? order.indexOf(before.id) + 1 : 0, 0, c.id);
     });
@@ -655,11 +661,10 @@ export default class Kanban extends View {
   /** The places of the board for the columns `cols`; `stacked`: Working with Waiting, Done with Idle share one. */
   places(cols, stacked) { return placesOf(cols, stacked ? GROUPS : []); }
 
-  /** The addresses of the cards in the order they show: place by place (top to bottom in one); the cards of a
-   *  folded lane left out. */
+  /** The cards in the order they show: place by place (top to bottom in one); the cards of a folded lane left out. */
   cardOrder(shown, places, lanes = this.lanes(shown, places.flat().map((c) => c.id))) {
     const ids = places.flat().map((c) => c.id);
-    return lanes ? laneOrder(lanes, ids, this.collapsed()) : ids.flatMap((id) => inColumn(shown, id)).map((a) => a.address);
+    return lanes ? laneOrder(lanes, ids, this.collapsed()) : ids.flatMap((id) => inColumn(shown, id));
   }
 
   /** The ids of the folded lanes. Ids of spaces that are gone stay: a machine that is offline lists none. */
@@ -730,15 +735,27 @@ export default class Kanban extends View {
     return p === "auto" ? boardNow().stacks === true : p === "on";
   }
 
-  /** Agents after the filter and the search text. */
+  /** The cards after the filter and the search text: the agents, then the terminal cards. */
   visible() {
-    const q = String(shared(KEY_QUERY) ?? "").trim().toLowerCase();
-    const scoped = this.withWaiting(applyFilter(agents(), this.activeFilter(), machineOf));
-    if (!q) return scoped;
-    return scoped.filter((a) => {
+    const q = String(shared(KEY_QUERY) ?? "").trim().toLowerCase(), f = this.activeFilter();
+    const scoped = this.withWaiting(applyFilter(agents(), f, machineOf)), terms = applyFilter(this.terminalCards(), f, machineOf);
+    if (!q) return [...scoped, ...terms];
+    const hit = (text) => text.toLowerCase().includes(q);
+    return [...scoped.filter((a) => {
       const pane = panes().find((p) => p.pane === a.pane);
-      return `${a.title} ${a.program?.name} ${a.space_name} ${a.tab_name} ${pane?.branch ?? ""}`.toLowerCase().includes(q);
-    });
+      return hit(`${a.title} ${a.program?.name} ${a.space_name} ${a.tab_name} ${pane?.branch ?? ""}`);
+    }), ...terms.filter((c) => hit(`${c.name} ${c.space_name} ${c.cwd ?? ""} ${c.program?.name ?? ""}`))];
+  }
+
+  /** The tabs with no agent, as cards (see terminalTabs), each with the name its tab shows. */
+  terminalCards() {
+    return terminalTabs(spaces(), agents(), panes(), spaceName).map((c) => ({ ...c, name: this.tabLabel(c.tab_name, c.place) }));
+  }
+
+  /** The name of a tab as Herdr shows it: `raw`, or "Tab <n>" for a tab nobody named. */
+  tabLabel(raw, n) {
+    const name = String(raw ?? "").trim();
+    return name && !unnamed(name) ? name : this.s("tabNumber", { n });
   }
 
   detailHidden() { return Boolean(find(layout(), "detail")?.hidden); }
@@ -757,14 +774,15 @@ export default class Kanban extends View {
 
   // ---- actions -------------------------------------------------------------
 
-  /** Shows the tab of `a` in the panel: its space and tab become the active ones (the panel shows the active
-   *  tab), its pane gets the keyboard. Ids go as agents() gives them: remote ones keep their "<machine>/". */
+  /** Shows the tab of card `a` in the panel: its space and tab become the active ones (the panel shows the active
+   *  tab), its pane gets the keyboard. Ids go as agents() and spaces() give them: remote ones keep their "<machine>/".
+   *  A terminal card has no agent to focus. */
   select(a) {
-    this.guard(() => Promise.all([run("agent.focus", { terminal: a.address }), ...this.showAgent(a), this.showDetail()]));
+    this.guard(() => Promise.all([a.term ? null : run("agent.focus", { terminal: a.address }), ...this.showCard(a), this.showDetail()]));
   }
 
-  showAgent(a) {
-    return [run("space.select", { id: a.space }), run("tab.select", { id: a.tab }), run("pane.focus", { terminal: a.address })];
+  showCard(a) {
+    return [run("space.select", { id: a.space }), run("tab.select", { id: a.tab }), a.address ? run("pane.focus", { terminal: a.address }) : null];
   }
 
   showDetail() { return this.detailHidden() ? run("layout.show", { id: "detail" }) : null; }
@@ -774,23 +792,23 @@ export default class Kanban extends View {
   stepCard(step) {
     const shown = this.visible(), hidden = this.hidden();
     const places = this.places(this.columns().filter((c) => !hidden.has(c.id)), this.stacked());
-    const of = new Map(shown.map((a) => [a.address, a]));
     // A key repeat comes before the last select lands, so it goes on from that card, not from the old focus.
     const f = focused(), tab = shownTab().id, at = { from: this.steppedTo(), tab, terminal: f?.terminal, pane: f?.pane };
-    const a = nextCard(this.cardOrder(shown, places).map((id) => of.get(id)), at, step);
+    const a = nextCard(this.cardOrder(shown, places), at, step);
     if (!a) return;
     this.stepped = { address: a.address, tab: a.tab, was: { tab, terminal: f?.terminal } };
     this.select(a);
   }
 
-  /** The address of the card the last stepCard selected while the shown tab and the focused terminal are still on
-   *  their way there (each the old or the new one); else null, and it is forgotten. */
+  /** The address (its tab, for a card without one) of the card the last stepCard selected while the shown tab and
+   *  the focused terminal are still on their way there (each the old or the new one); else null, and it is forgotten. */
   steppedTo() {
     const s = this.stepped, tab = shownTab().id, term = focused()?.terminal;
-    const moving = s && [s.was.tab, s.tab].includes(tab) && [s.was.terminal, s.address].includes(term)
-      && !(tab === s.tab && term === s.address);
+    // A card with no terminal has landed once its tab shows.
+    const landed = s && tab === s.tab && (s.address == null || term === s.address);
+    const moving = s && !landed && [s.was.tab, s.tab].includes(tab) && [s.was.terminal, s.address].includes(term);
     if (!moving) this.stepped = null;
-    return this.stepped?.address ?? null;
+    return this.stepped ? this.stepped.address ?? this.stepped.tab : null;
   }
 
   /** Maximizes the tab panel (the board hides, the panel takes the rest of its row or column) or restores the board
@@ -1394,11 +1412,11 @@ export default class Kanban extends View {
     });
   }
 
-  /** Opens the right-click menu of a card at the pointer. */
+  /** Opens the right-click menu of a card at the pointer: an agent goes by its address, a terminal card by its tab. */
   openCardMenu(a) {
     openOverlay({
       mod: "kanban", kind: "popup", width: CARD_MENU_W, height: MENU_PAD * 2 + MENU_HEAD + this.cardMenuItems(a).length * MENU_ROW,
-      props: { part: "card-menu", lang: this.lang, address: a.address },
+      props: { part: "card-menu", lang: this.lang, ...(a.term ? { tab: a.tab } : { address: a.address }) },
     });
   }
 
@@ -1419,12 +1437,13 @@ export default class Kanban extends View {
       { id: "maximize", symbol: "maximize", label: this.s("menuMaximize"),
         run: () => { this.select(a); if (!this.maximized()) this.toggleMaximize(); } },
       { id: "pin", symbol: "pin", label: this.s(a.pinned ? "unpin" : "pin"), run: () => this.togglePin(a) },
-    ];
+    ].filter((it) => !a.term || (it.id !== "clone" && it.id !== "pin")); // a terminal card has no agent to duplicate or pin
   }
 
-  /** The card menu: the space and the tab of the agent, then its rows. A row acts, then closes the menu. */
+  /** The card menu: the space and the tab of the card, then its rows. A row acts, then closes the menu. */
   cardMenu(t) {
-    const a = agents().find((x) => x.address === this.props.address);
+    const tab = this.props.tab;
+    const a = tab != null ? this.terminalCards().find((x) => x.tab === tab) : agents().find((x) => x.address === this.props.address);
     if (!a) { this.closeDialog(); return v_flex().id("kb-card-root"); }
     const row = (it) => h_flex().id(`kb-card-${it.id}`).w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6)
       .cursor_pointer().text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover))
@@ -1436,7 +1455,7 @@ export default class Kanban extends View {
       .when(Boolean(it.more), (e) => e.child(svg(icon("chevron-right")).size(12).flex_none().text_color(t.dim)));
     return v_flex().id("kb-card-root").w_full().p(MENU_PAD)
       .child(h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim)
-        .child(div().flex_1().min_w(0).truncate().child([a.space_name, a.tab_name].filter(Boolean).join(" · "))))
+        .child(div().flex_1().min_w(0).truncate().child([a.space_name, a.term ? a.name : a.tab_name].filter(Boolean).join(" · "))))
       .children(this.cardMenuItems(a).map(row));
   }
 
@@ -1477,8 +1496,10 @@ export default class Kanban extends View {
   /** The rename popup: a head, the field, Cancel and Save. Enter saves, Esc cancels. */
   renameBox(t) {
     const tab = this.props.tab;
-    // Close once the tab is gone: no agent and no pane left in it (an agent can exit while its tab stays).
-    if (!agents().some((x) => x.tab === tab) && !panes().some((p) => p.tab === tab)) { this.closeDialog(); return v_flex().id("kb-rn-root"); }
+    // Close once the tab is gone: no agent, pane or spaces() entry left (an agent can exit while its tab stays).
+    const alive = agents().some((x) => x.tab === tab) || panes().some((p) => p.tab === tab)
+      || spaces().some((s) => (s.tabs ?? []).some((x) => x.id === tab));
+    if (!alive) { this.closeDialog(); return v_flex().id("kb-rn-root"); }
     return v_flex().id("kb-rn-root").w_full().p(MENU_PAD)
       .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); this.closeDialog(); } })
       .child(h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim)
@@ -1725,11 +1746,11 @@ export default class Kanban extends View {
   // ---- the board -------------------------------------------------------------
 
   glyph(a, t, compact = false) {
-    const prog = a.program ?? {};
+    const prog = (a.term ? null : a.program) ?? {};
     const tile = prog.tile || tint(t.foreground, "14");
     const inner = prog.icon
       ? (prog.tint ? svg(prog.icon).size(compact ? 13 : 15).text_color(prog.color || t.foreground) : image(prog.icon).size(compact ? 15 : 17))
-      : svg(icon("bot")).size(compact ? 13 : 15).text_color(t.muted);
+      : svg(icon(a.term ? "terminal" : "bot")).size(compact ? 13 : 15).text_color(t.muted);
     return div().size(compact ? 24 : 28).rounded(compact ? 8 : 9).flex_none().flex().items_center().justify_center().bg(tile).child(inner);
   }
 
@@ -1866,6 +1887,43 @@ export default class Kanban extends View {
           { active: a.pinned, tooltip: this.s(a.pinned ? "unpin" : "pin"), size: 22, glyph: 12, color: a.pinned ? t.accent : t.dim })));
   }
 
+  /** The card of a tab with no agent: the terminal icon, the tab name, its space, machine, folder and panes; as a
+   *  summary in 2 lines. A click and a right click act as on an agent card; no pin, no duplicate. */
+  terminalCard(c, t, compact, summary) {
+    const selected = c.tab === this.shown;
+    const folder = base(c.cwd);
+    const panesLabel = c.panes > 1 ? this.s("panes", c.panes) : null;
+    const chip = (opts) => machineChip(t, `machine-term-${c.tab}`, c.machine, opts);
+    const root = v_flex().id(`term-${c.tab}`).w_full().flex_none().cursor_pointer()
+      .bg(selected ? t.raised : t.background)
+      .border_1().border_color(selected ? t.accent : c.machine ? tint(remoteColor(t), "88") : t.border)
+      .when(selected, (e) => e.shadow_md())
+      .hover((st) => st.bg(t.raised))
+      .on_click(() => this.select(c))
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openCardMenu(c); });
+    const name = (size) => div().flex_1().min_w(0).truncate().text_size(size).font_bold().text_color(t.foreground).child(c.name);
+    if (summary) {
+      return root.px(9).py(7).gap(4).rounded(9)
+        .child(h_flex().gap(7).items_center()
+          .child(this.glyph(c, t, true).size(20).rounded(6))
+          .child(name(13))
+          .when(Boolean(c.machine), (e) => e.child(chip({ height: 18, text: 10.5 }))))
+        .child(h_flex().h(20).items_center()
+          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted)
+            .child([c.space_name, folder !== c.space_name ? folder : "", panesLabel].filter(Boolean).join(" · "))));
+    }
+    return root.p(compact ? 9 : 12).gap(compact ? 7 : 9).rounded(compact ? 10 : 12)
+      .child(h_flex().gap(compact ? 7 : 9).items_center()
+        .child(this.glyph(c, t, compact))
+        .child(v_flex().flex_1().min_w(0)
+          .child(name(compact ? 14 : 15))
+          .when(Boolean(c.space_name), (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(c.space_name)))))
+      .when(Boolean(c.machine) || Boolean(folder) || Boolean(panesLabel), (e) => e.child(h_flex().flex_wrap().gap(5).items_center()
+        .when(Boolean(c.machine), (r) => r.child(chip()))
+        .when(Boolean(folder) && folder !== c.space_name, (r) => r.child(pill(t, { label: folder, symbol: "folder" })))
+        .when(Boolean(panesLabel), (r) => r.child(pill(t, { label: panesLabel, symbol: "terminal" })))));
+  }
+
   /** An arrow in a column header that moves the column one place left (-1) or right (+1). Dim at the edge. */
   moveButton(t, c, dir, compact = false) {
     const can = this.neighbor(c.id, dir) !== null;
@@ -1927,7 +1985,7 @@ export default class Kanban extends View {
   /** The cards of `list` in `el`, with the padding and the gap of a compact or normal board. */
   cardStack(el, list, t, compact, summary) {
     return el.px(compact ? 7 : 10).gap(summary ? 6 : compact ? 7 : 10)
-      .children(list.map((a) => (summary ? this.summaryCard(a, t) : this.card(a, t, compact))));
+      .children(list.map((a) => (a.term ? this.terminalCard(a, t, compact, summary) : summary ? this.summaryCard(a, t) : this.card(a, t, compact))));
   }
 
   /** One status column. `compact`: smaller header and cards. `fixed`: see sized().
@@ -1942,7 +2000,8 @@ export default class Kanban extends View {
           v_flex().h(compact ? 64 : 96).flex_none().items_center().justify_center().gap(compact ? 4 : 8).rounded(12)
             .border_1().border_dashed().border_color(tint(color, "44"))
             .child(svg(icon(c.symbol)).size(18).text_color(tint(color, "88")))
-            .child(div().px(8).text_center().text_size(12).text_color(t.dim).child(this.s(searching ? "emptyColSearch" : "emptyCol"))))));
+            .child(div().px(8).text_center().text_size(12).text_color(t.dim)
+              .child(this.s(searching ? "emptyColSearch" : c.id === TERMINALS ? "emptyTerminals" : "emptyCol"))))));
   }
 
   emptyState(t, title, hint, action) {
@@ -1956,10 +2015,9 @@ export default class Kanban extends View {
 
   board(t) {
     const hidden = this.hidden();
-    const all = agents();
     // A search or a filter: an empty column says "No match".
     const searching = String(shared(KEY_QUERY) ?? "").trim().length > 0 || this.activeFilter().kind !== "all";
-    if (!all.length) {
+    if (!agents().length && !this.terminalCards().length) {
       boardNow().stacks = undefined;
       return this.emptyState(t, this.s("none"), this.s("noneHint"),
         button(t, "kb-new", this.s("newAgent"), () => this.openNew(), { primary: true, symbol: "plus" }));
@@ -1979,8 +2037,8 @@ export default class Kanban extends View {
     }
     const compact = this.boardCompact(cols.length * COLUMN_WIDE + (cols.length - 1) * GAP + (more.length ? GAP + MORE_W : 0));
     const places = this.places(cols, compact);
-    // Herdr's agent.next and agent.prev walk the cards in the order they show.
-    setAgentOrder(this.cardOrder(shown, places, lanes));
+    // Herdr's agent.next and agent.prev walk the agent cards in the order they show.
+    setAgentOrder(this.cardOrder(shown, places, lanes).filter((a) => !a.term).map((a) => a.address));
     // A row that scrolls sideways lays its children out at their content width, so the columns
     // would not share the board. Scroll only when the places do not fit at their minimum width,
     // and then give each place exactly that width.
@@ -2144,7 +2202,7 @@ export default class Kanban extends View {
     // agents() has the name the cards use; a tab with no agent has only its spaces() entry.
     const raw = String(agents().find((a) => a.tab === id)?.tab_name ?? tab?.name ?? "").trim();
     const place = (space.tabs ?? []).findIndex((x) => x.id === id) + 1;
-    const name = raw && !unnamed(raw) ? raw : this.s("tabNumber", { n: place || raw || id });
+    const name = this.tabLabel(raw, place || raw || id);
     const dot = () => div().flex_none().text_size(12).text_color(t.dim).child("·");
     return row
       .child(div().flex_shrink(1).min_w(0).max_w(260).truncate().text_size(13).font_semibold().text_color(t.foreground).child(name))
