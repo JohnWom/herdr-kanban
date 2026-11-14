@@ -27,6 +27,7 @@ const machineOf = (a) => (String(a?.address ?? "").includes("/") ? a.address.spl
 import { WaitingTracker } from "./waiting.js";
 import { inColumn, groupLanes, laneOrder } from "./lanes.js";
 import { parseFilter, migrateFilter, resolveFilter, applyFilter } from "./filter.js";
+import { pairsOf, stacks, barLook } from "./density.js";
 
 /** The icon of an entry of knownAgents: a one-color glyph is tinted, anything else is a picture. */
 const agentGlyph = (a, t) => (!a.icon ? svg(icon("bot")).size(15).flex_none().text_color(t.muted)
@@ -42,8 +43,9 @@ const OLD_SCOPE = "kanban.scope", OLD_SCOPE_SPACE = "kanban.scopeSpace"; // olde
 const KEY_MAXIMIZED = "kanban.maximized"; // px of the tab panel before it was maximized (maximized itself is board.hidden)
 const KEY_WIDTH = "kanban.width"; // widest a column may be, in px; absent: columns share the board
 const KEY_ORDER = "kanban.order"; // ids of the columns, left to right; absent: the order of COLUMNS
-const KEY_DENSITY = "kanban.density"; // "auto" | "compact" | "normal"; absent: auto
-const KEY_CARDS = "kanban.cards"; // "auto" | "summary" | "full"; absent: auto (summary while the board is compact)
+const KEY_DENSITY = "kanban.density"; // the bar: "auto" | "compact" | "normal"; absent: auto. Shared with the Dock bar (tabs-dock)
+const KEY_PAIRS = "kanban.pairs"; // the board: "auto" | "on" | "off"; absent: taken once from an older density (pairs())
+const KEY_CARDS = "kanban.cards"; // "auto" | "summary" | "full"; absent: auto (summary while the board stacks its pairs)
 const KEY_PANEL_OPEN = "kanban.panelOpen"; // "auto" | "side" | "dialog"; absent: auto. Shared with the Dock bar (tabs-dock)
 const KEY_PANEL_DIALOG = "kanban.panelDialog"; // { id, panel }: the panel dialog that is open now; null: none
 const KEY_GROUP = "kanban.group"; // "none" | "machine" | "space"; absent: none
@@ -57,6 +59,8 @@ const DIALOG_TITLE = 36; // px: the title row of a panel dialog
 // name a dialog that is gone: the bar trusts it only when its id is here. On globalThis, not in the module:
 // a layout switch starts a new copy of the bar with a new module, and the dialog stays open.
 const liveDialogs = () => (globalThis.__kanbanPanelDialogs ??= new Set());
+// What Auto of "Stack columns" does on the board now ({ stacks }), for the gear menu, which the bar opens.
+const boardNow = () => (globalThis.__kanbanBoard ??= {});
 // The mods that the person turned off in the mods-hub: a list of mod folder names. The same key and the same rules
 // as in mods/tabs-dock. The bar shows no button of an entry whose mod is off, hides the blocks of an off mod in its
 // layout, and shows Herdr's own mod in a block of an off replacement mod (ORIGINALS). It undoes only what it did.
@@ -68,13 +72,14 @@ const entryMod = (e) => e.mod ?? (e.run === "mod.open" ? e.args?.name : String(e
 // Steps of the width control. null = Auto: the columns share the whole board.
 const WIDTHS = [150, 180, 220, 260, 320, 400, null];
 const MIN_COLUMN = 150; // narrowest a column may be before the board scrolls
-const MIN_COLUMN_COMPACT = 120; // the same, in compact density
+const MIN_COLUMN_COMPACT = 120; // the same, on a compact board
 const GAP = 12, GAP_COMPACT = 8; // between the columns
 
-// Density, set in the gear menu. Auto makes each part compact by its own width (on_size_change, the same px as .w()):
-// the bar below BAR_WIDE, the board below COLUMN_WIDE for each visible column.
-// The density is shared with the Dock bar (tabs-dock), which reads the same key.
+// The bar (density) and the board (pairs), set in the gear menu. Auto goes by the width of the part (on_size_change,
+// the same px as .w()): the bar shows icons below BAR_WIDE and all names from LABELS_WIDE; the board stacks its pairs
+// and turns compact below COLUMN_WIDE for each visible column (see density.js).
 const DENSITIES = ["auto", "compact", "normal"];
+const PAIRS = ["auto", "on", "off"];
 // Card view, set in the gear menu.
 const CARD_VIEWS = ["auto", "summary", "full"];
 // Swimlanes, set in the bar; the icon of each choice.
@@ -83,7 +88,7 @@ const GROUP_ICONS = { none: "lanes-none", machine: "lanes-machine", space: "lane
 const BAR_WIDE = 1800;
 const LABELS_WIDE = 2250; // from this bar width the panel buttons show their names, not only icons
 const COLUMN_WIDE = 220;
-// In compact density the columns of a group share one place, one under the other, at the place of
+// On a compact board the columns of a group share one place, one under the other, at the place of
 // the first of them in the column order. Waiting goes under Working, Idle under Done.
 const GROUPS = [["working", "waiting"], ["done", "idle"]];
 // "Waiting" is not a status the Herdr app reports: the mod derives it for a Claude Code agent that shows
@@ -233,11 +238,16 @@ const STR = {
     widthAutoTip: "Click the value to go back to Auto.",
     narrower: "Narrower columns", wider: "Wider columns",
     moveLeft: "Move this column left", moveRight: "Move this column right",
-    density_auto: "Auto", density_compact: "Compact", density_normal: "Normal",
-    densityNow: "{mode} (compact now)", densityNowNormal: "{mode} (normal now)",
+    density_auto: "Auto", density_compact: "Icons", density_normal: "Names",
+    densityNowIcons: "{mode}: icons now (names from {px} px of bar)", densityNowNames: "{mode}: names now",
+    densityNowMixed: "{mode}: names now, the panel buttons as icons (their names from {labels} px)",
+    pairs_auto: "Auto", pairs_on: "On", pairs_off: "Off",
+    pairsOn: "Waiting under Working, Idle under Done, with smaller heads and cards",
+    pairsNowOn: "{mode}: stacked now (below {px} px per column)", pairsNowOff: "{mode}: side by side now (stacks below {px} px per column)",
+    pairsAuto: "{mode}: stacks below {px} px per column",
     cards_auto: "Auto", cards_summary: "Summary", cards_full: "Full",
-    cardsAuto: "Auto (summary in compact density)",
-    widthLabel: "Column width", densityLabel: "Density", cardsLabel: "Cards", waitingLabel: "Waiting column",
+    cardsAuto: "Auto (summary while the columns are stacked)",
+    widthLabel: "Column width", densityLabel: "Bar", pairsLabel: "Stack columns", cardsLabel: "Cards", waitingLabel: "Waiting column",
     columnsTitle: "Columns", orderHint: "The arrows in a column header change the order.",
     opens_auto: "Auto", opens_side: "Side panel", opens_dialog: "Dialog",
     opensNowDialog: "{mode} (dialog now)", opensNowSide: "{mode} (side panel now)",
@@ -291,11 +301,16 @@ const STR = {
     widthAutoTip: "Clique no valor para voltar para Auto.",
     narrower: "Colunas mais estreitas", wider: "Colunas mais largas",
     moveLeft: "Mover esta coluna para a esquerda", moveRight: "Mover esta coluna para a direita",
-    density_auto: "Auto", density_compact: "Compacta", density_normal: "Normal",
-    densityNow: "{mode} (compacta agora)", densityNowNormal: "{mode} (normal agora)",
+    density_auto: "Auto", density_compact: "Ícones", density_normal: "Nomes",
+    densityNowIcons: "{mode}: ícones agora (nomes a partir de {px} px de barra)", densityNowNames: "{mode}: nomes agora",
+    densityNowMixed: "{mode}: nomes agora, os botões de painel como ícones (seus nomes a partir de {labels} px)",
+    pairs_auto: "Auto", pairs_on: "Sim", pairs_off: "Não",
+    pairsOn: "Aguardando sob Trabalhando, Ociosos sob Concluídos, com cabeçalhos e cartões menores",
+    pairsNowOn: "{mode}: empilhadas agora (abaixo de {px} px por coluna)", pairsNowOff: "{mode}: lado a lado agora (empilha abaixo de {px} px por coluna)",
+    pairsAuto: "{mode}: empilha abaixo de {px} px por coluna",
     cards_auto: "Auto", cards_summary: "Resumido", cards_full: "Completo",
-    cardsAuto: "Auto (resumido na densidade compacta)",
-    widthLabel: "Largura da coluna", densityLabel: "Densidade", cardsLabel: "Cartões", waitingLabel: "Coluna Aguardando",
+    cardsAuto: "Auto (resumido enquanto as colunas estão empilhadas)",
+    widthLabel: "Largura da coluna", densityLabel: "Barra", pairsLabel: "Empilhar colunas", cardsLabel: "Cartões", waitingLabel: "Coluna Aguardando",
     columnsTitle: "Colunas", orderHint: "As setas no cabeçalho de uma coluna mudam a ordem.",
     opens_auto: "Auto", opens_side: "Painel lateral", opens_dialog: "Diálogo",
     opensNowDialog: "{mode} (diálogo agora)", opensNowSide: "{mode} (painel lateral agora)",
@@ -391,6 +406,7 @@ export default class Kanban extends View {
       if (this.part === "new-dialog") this.takeNew(cx);
       return;
     }
+    this.pairs(); // takes over an older density before the bar can change it, even when the board does not render
     // Which Claude Code agents wait for subagents. Both parts run one: they count the cards too.
     const minutes = Number(this.props.waitingMinutes);
     this.tracker = new WaitingTracker({ hc, home, exec, dirs: this.props.claudeDirs, ttlMs: minutes > 0 ? minutes * 60000 : undefined });
@@ -434,7 +450,7 @@ export default class Kanban extends View {
       // "kanban.group-<id>" opens the menu of a group button (kanban.group-git). "kanban.gear" does what the
       // gear button does. "kanban.buttons" opens the editor of the bar buttons. "kanban.maximize" maximizes
       // the tab panel or restores the board. "kanban.group" steps the lanes: none -> machine -> space.
-      // "kanban.filter" steps the filter: all -> the current space -> all.
+      // "kanban.filter" steps the filter: all -> the current space -> all. "kanban.pairs" steps Stack columns: auto -> on -> off.
       cx.spawn(async (cx) => {
         for (;;) {
           const cmd = String(await nextCommand());
@@ -444,6 +460,7 @@ export default class Kanban extends View {
           else if (cmd === "maximize") this.toggleMaximize();
           else if (cmd === "group") this.stepGroup();
           else if (cmd === "filter") this.stepFilter();
+          else if (cmd === "pairs") this.stepPairs();
           else if (cmd.startsWith("group-")) this.openGroup(cmd.slice(6));
           else if (cmd.startsWith("panel-")) this.togglePanel(cmd.slice(6));
           cx.notify();
@@ -647,18 +664,31 @@ export default class Kanban extends View {
     return CARD_VIEWS.includes(v) ? v : "auto";
   }
 
-  /** True when the cards show summarized. Auto follows the density of the board. */
+  /** True when the cards show summarized. Auto follows the board. */
   summary(boardCompact) {
     const v = this.cardView();
     return v === "auto" ? boardCompact : v === "summary";
   }
 
-  /** True when this part shows compact. `width`: what on_size_change gave (undefined before the
-   *  first layout; the same px as .w() and .gap()). `wide`: the width below which Auto is compact. */
-  compact(width, wide) {
-    const d = this.density();
-    if (d !== "auto") return d === "compact";
-    return typeof width === "number" && width < wide;
+  /** How the bar shows now: "icons", "names" or "mixed" (see barLook). */
+  barLook() { return barLook(this.density(), this.barW, BAR_WIDE, LABELS_WIDE); }
+
+  /** Whether the board stacks its pairs: "auto", "on" or "off". Absent, the first read saves what an older density meant. */
+  pairs() {
+    const v = shared(KEY_PAIRS);
+    if (PAIRS.includes(v)) return v;
+    const next = pairsOf(shared(KEY_DENSITY));
+    setShared(KEY_PAIRS, next);
+    return next;
+  }
+
+  /** The command kanban.pairs: auto -> on -> off -> auto. */
+  stepPairs() { setShared(KEY_PAIRS, PAIRS[(PAIRS.indexOf(this.pairs()) + 1) % PAIRS.length]); }
+
+  /** True when the board stacks its pairs and shows smaller heads and cards. `wide`: the board width below which Auto does. */
+  boardCompact(wide) {
+    boardNow().stacks = typeof this.boardW === "number" ? stacks("auto", this.boardW, wide) : undefined;
+    return stacks(this.pairs(), this.boardW, wide);
   }
 
   /** Agents after the filter and the search text. */
@@ -1051,10 +1081,10 @@ export default class Kanban extends View {
   /** The gear button opens a menu: the look of the board, the columns, Herdr's settings, the editor of the bar
    *  buttons and, with the mods-hub installed, the PowerMods dialog. The card counts are those of now. */
   openGear() {
-    const given = { part: "gear-menu", lang: this.lang, waiting: this.props.waiting, compact: this.compact(this.barW, BAR_WIDE),
+    const given = { part: "gear-menu", lang: this.lang, waiting: this.props.waiting, bar: this.barLook(),
       narrow: typeof this.barW === "number" && this.barW < PANEL_NARROW, counts: this.columnCounts() };
     // Room for every column, so the menu still fits after the Waiting column is turned on.
-    const height = (hub) => MENU_PAD * 2 + 2 * MENU_HEAD + 4 * GEAR_ROW + (1 + COLUMNS.length + (hub ? 3 : 2)) * MENU_ROW + GEAR_HINT + GEAR_SEP;
+    const height = (hub) => MENU_PAD * 2 + 2 * MENU_HEAD + 5 * GEAR_ROW + (1 + COLUMNS.length + (hub ? 3 : 2)) * MENU_ROW + GEAR_HINT + GEAR_SEP;
     const open = (hub) => openOverlay({ mod: "kanban", kind: "popup", width: GEAR_W, height: height(hub), props: { ...given, hub } });
     readTextFile(`${appHome()}/mods/mods-hub/mod.json`).then((text) => open(text != null), () => open(false));
   }
@@ -1125,9 +1155,12 @@ export default class Kanban extends View {
       .child(svg(icon(symbol)).size(15).flex_none().text_color(t.muted))
       .child(div().flex_1().min_w(0).truncate().child(label))
       .child(control);
-    const choice = (id, values, now, key, tip) => segmented(t, values.map((v) => ({ id: `kb-gear-${id}-${v}`, label: this.s(`${id}_${v}`),
-      active: v === now, tooltip: v === "auto" ? tip : "", onClick: () => setShared(key, v) })));
-    const density = this.s(p.compact ? "densityNow" : "densityNowNormal", { mode: this.s("density_auto") });
+    const choice = (id, values, now, key, tip, tips = {}) => segmented(t, values.map((v) => ({ id: `kb-gear-${id}-${v}`, label: this.s(`${id}_${v}`),
+      active: v === now, tooltip: v === "auto" ? tip : tips[v] ?? "", onClick: () => setShared(key, v) })));
+    const bar = this.s(p.bar === "icons" ? "densityNowIcons" : p.bar === "names" ? "densityNowNames" : "densityNowMixed",
+      { mode: this.s("density_auto"), px: BAR_WIDE, labels: LABELS_WIDE });
+    const stacked = boardNow().stacks;
+    const pairs = this.s(stacked == null ? "pairsAuto" : stacked ? "pairsNowOn" : "pairsNowOff", { mode: this.s("pairs_auto"), px: COLUMN_WIDE });
     const opens = this.s(p.narrow ? "opensNowDialog" : "opensNowSide", { mode: this.s("opens_auto") });
     const waiting = this.waitingOn();
     const chip = (it) => h_flex().w_full().h(MENU_ROW).pl(6).flex_none().items_center()
@@ -1135,8 +1168,9 @@ export default class Kanban extends View {
     return v_flex().id("kb-gear-root").w_full().p(MENU_PAD)
       .child(head(this.s("gearTitle")))
       .child(setting("width", "width", this.s("widthLabel"), this.widthControl(t)))
-      .child(setting("density", "density", this.s("densityLabel"), choice("density", DENSITIES, this.density(), KEY_DENSITY, density)))
+      .child(setting("pairs", "stack", this.s("pairsLabel"), choice("pairs", PAIRS, this.pairs(), KEY_PAIRS, pairs, { on: this.s("pairsOn") })))
       .child(setting("cards", "cards", this.s("cardsLabel"), choice("cards", CARD_VIEWS, this.cardView(), KEY_CARDS, this.s("cardsAuto"))))
+      .child(setting("density", "density", this.s("densityLabel"), choice("density", DENSITIES, this.density(), KEY_DENSITY, bar)))
       .child(setting("opens", "dialog", this.s("opensLabel"), choice("opens", PANEL_OPENS, this.panelOpen(), KEY_PANEL_OPEN, opens)))
       .child(h_flex().id("kb-gear-waiting").w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6).cursor_pointer()
         .text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover)).tooltip(this.s(waiting ? "waitingOn" : "waitingOff"))
@@ -1735,7 +1769,7 @@ export default class Kanban extends View {
         .child(div().truncate().child(this.s("moreCols", { n: more.length }))));
   }
 
-  /** The cards of `list` in `el`, with the padding and the gap of the density. */
+  /** The cards of `list` in `el`, with the padding and the gap of a compact or normal board. */
   cardStack(el, list, t, compact, summary) {
     return el.px(compact ? 7 : 10).gap(summary ? 6 : compact ? 7 : 10)
       .children(list.map((a) => (summary ? this.summaryCard(a, t) : this.card(a, t, compact))));
@@ -1771,6 +1805,7 @@ export default class Kanban extends View {
     // A search or a filter: an empty column says "No match".
     const searching = String(shared(KEY_QUERY) ?? "").trim().length > 0 || this.activeFilter().kind !== "all";
     if (!all.length) {
+      boardNow().stacks = undefined;
       return this.emptyState(t, this.s("none"), this.s("noneHint"),
         button(t, "kb-new", this.s("newAgent"), () => this.openNew(), { primary: true, symbol: "plus" }));
     }
@@ -1785,11 +1820,12 @@ export default class Kanban extends View {
     // agent.next and agent.prev walk the cards in the order they show.
     setAgentOrder(lanes ? laneOrder(lanes, ids, this.collapsed()) : ids.flatMap((id) => inColumn(shown, id)).map((a) => a.address));
     if (!cols.length) {
+      boardNow().stacks = undefined;
       return this.emptyState(t, this.s("allHidden"), this.s("allHiddenHint"),
         button(t, "kb-show-all", this.s("showAll"), () => setShared(KEY_HIDDEN, []), { primary: true, symbol: "eye" }));
     }
-    const compact = this.compact(this.boardW, cols.length * COLUMN_WIDE + (cols.length - 1) * GAP + (more.length ? GAP + MORE_W : 0));
-    // Places in the row: one column each. In compact density the columns of a group (Working with
+    const compact = this.boardCompact(cols.length * COLUMN_WIDE + (cols.length - 1) * GAP + (more.length ? GAP + MORE_W : 0));
+    // Places in the row: one column each. On a compact board the columns of a group (Working with
     // Waiting, Done with Idle) share one place, one under the other, at the place of the first of
     // them in the order.
     const places = [];
@@ -1998,13 +2034,10 @@ export default class Kanban extends View {
       .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
       .on_click(action).child(glyph);
     const win = w?.platform === "windows";
-    const compact = this.compact(this.barW, BAR_WIDE);
-
     // The bar reads left to right: what to show (search, filter, the lanes, the tab panel) | Settings (the gear menu has the
-    // look of the board and the columns) | New agent | the panel group (Files, Changes, dock entries) and the
-    // window buttons. The panel buttons: names in Normal density, icons in Compact; in Auto, names from LABELS_WIDE px.
-    const d = this.density();
-    const iconOnly = d === "normal" ? false : d === "compact" ? true : !(this.barW >= LABELS_WIDE);
+    // look of the board and the bar, and the columns) | New agent | the panel group (Files, Changes, dock entries) and the
+    // window buttons. "icons": New agent and the filter as icons, a narrower search; the Agent and panel buttons are icons unless "names".
+    const look = this.barLook(), compact = look === "icons", iconOnly = look !== "names";
     const panels = this.panelItems(t, iconOnly); // once per render: it also edits the layout
     const right = h_flex().flex_none().gap(6).items_center()
       .when(panels.length > 0, (e) => e.child(buttonGroup(t, panels)))
@@ -2022,7 +2055,7 @@ export default class Kanban extends View {
       }))
       .child(this.filterButton(t, compact));
     // The search, the filter, the lanes and the Agent button share one row that scrolls sideways when the bar is too narrow
-    // (Normal density on a small monitor). New agent and the right end stay outside it, so they always show.
+    // (Names on a small monitor). New agent and the right end stay outside it, so they always show.
     const scroller = (children) => h_flex().id("kb-strip").flex_1().min_w(0).gap(compact ? 6 : 10).items_center().overflow_x_scrollbar().children(children);
 
     // With the sidebar hidden, the macOS window buttons sit over the start of the bar: leave them room.
