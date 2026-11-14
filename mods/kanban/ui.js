@@ -129,9 +129,9 @@ export function buttonGroup(t, children) {
     .children(children);
 }
 
-/** A thin vertical line. Between the sections of the bar, or inside a group (`inner`: shorter). */
-export function divider(t, inner = false) {
-  return div().w(1).h(inner ? 14 : 20).mx(inner ? 2 : 0).flex_none().bg(tint(t.foreground, "26"));
+/** A thin vertical line between the sections of the bar. */
+export function divider(t) {
+  return div().w(1).h(20).flex_none().bg(tint(t.foreground, "26"));
 }
 
 /** A text button. `iconOnly` (with a `symbol`): no label (the tooltip has it). `disabled`: dim and inert. */
