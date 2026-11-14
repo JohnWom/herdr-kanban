@@ -11,6 +11,7 @@
 //   "new-dialog" the dialog that starts a session: machine, space, program, tab name (the bar and the card menu open it, see openNew).
 //   "columns-menu" every column with a tick to show or hide it, a popup (the board opens it, see openColumns).
 //   "filter-menu" what the board shows: all, the current space, a space or a machine, a popup (the bar opens it, see openFilter).
+//   "place-menu" off, right, left or bottom: where the tab panel shows, a popup (the bar opens it, see openPlace).
 //   "gear-menu" the menu of the gear button: the look of the board, the columns, Herdr's settings, Bar buttons and PowerMods,
 //               a popup (the bar opens it, see openGear).
 //   "buttons-menu" the editor of the order and the visibility of the panel buttons, a popup (the bar opens it, see openButtons).
@@ -20,7 +21,7 @@ import { v_flex, h_flex, InputState } from "gpui-base";
 import { agents, spaces, panes, machines, focused, layout, window, theme, props, shared, setShared, run, openOverlay, closeOverlay,
   setAgentOrder, appHome, home, terminals, readTextFile, watchFolder, notify, nextCommand, hc, knownAgents, exec } from "herdr";
 import * as fs from "fs/promises";
-import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pill, button, panelButton, panelGlyph, buttonGroup, divider, stop, machineChip, remoteColor } from "./ui.js";
+import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pill, button, panelButton, menuArrow, panelGlyph, buttonGroup, divider, stop, machineChip, remoteColor } from "./ui.js";
 
 /** The machine of an agent on another computer: its address is "<machine>/<terminal>". */
 const machineOf = (a) => (String(a?.address ?? "").includes("/") ? a.address.split("/")[0] : null);
@@ -28,6 +29,7 @@ import { WaitingTracker } from "./waiting.js";
 import { inColumn, groupLanes, laneOrder } from "./lanes.js";
 import { parseFilter, migrateFilter, resolveFilter, applyFilter } from "./filter.js";
 import { pairsOf, stacks, barLook } from "./density.js";
+import { PLACES, axis, placeOf, movePanel } from "./place.js";
 
 /** The icon of an entry of knownAgents: a one-color glyph is tinted, anything else is a picture. */
 const agentGlyph = (a, t) => (!a.icon ? svg(icon("bot")).size(15).flex_none().text_color(t.muted)
@@ -41,6 +43,8 @@ const KEY_QUERY = "kanban.query"; // the search text
 const KEY_FILTER = "kanban.filter"; // { kind: "all" | "current" | "space" | "machine", id? } (see filter.js); absent: all
 const OLD_SCOPE = "kanban.scope", OLD_SCOPE_SPACE = "kanban.scopeSpace"; // older versions; savedFilter() takes them over once
 const KEY_MAXIMIZED = "kanban.maximized"; // px of the tab panel before it was maximized (maximized itself is board.hidden)
+const KEY_PLACE = "kanban.panelPlace"; // "right" | "left" | "bottom": where the tab panel shows (see place.js); absent: right
+const KEY_PANEL_SIZE = "kanban.panelSize"; // { side, bottom }: px of the tab panel at a side and at the bottom, saved on a move
 const KEY_WIDTH = "kanban.width"; // widest a column may be, in px; absent: columns share the board
 const KEY_ORDER = "kanban.order"; // ids of the columns, left to right; absent: the order of COLUMNS
 const KEY_DENSITY = "kanban.density"; // the bar: "auto" | "compact" | "normal"; absent: auto. Shared with the Dock bar (tabs-dock)
@@ -102,7 +106,11 @@ const OLD_SHELL = "kanban-shell";
 
 // The tab panel ("detail"): its head (part "tab-head") over the active tab. Older versions had a block
 // { agent: "focused" } here and a stack "view" with a Terminals view; migrate() swaps them for this.
-const DETAIL_PX = 460;
+const DETAIL_PX = 460, DETAIL_BOTTOM_PX = 360; // px: the tab panel at a side (its width), at the bottom (its height)
+// The rows of the place menu: "off" hides the panel and keeps its place.
+const PLACE_ROWS = ["off", ...PLACES];
+const PLACE_ICONS = { off: "eye-off", right: "panel", left: "panel-left", bottom: "panel-bottom" };
+const PLACE_W = 200; // px: the place menu
 const MIGRATE_RENDERS = 20, MIGRATE_MS = 3000; // how long migrate() waits for its layout.set to land
 const TAB_PANEL = [
   { id: "detail-head", type: "block", content: { mod: "kanban", props: { part: "tab-head" } }, size: { px: 36 } },
@@ -220,6 +228,7 @@ const STR = {
     filterCurrentTip: "Showing the space you are in: {name}. It follows the active space. Click to change.",
     filterOnlyTip: "Showing only {name}. Click to change.",
     detailOn: "Hide the tab panel", detailOff: "Show the tab panel", agentLabel: "Agent",
+    placeTip: "Where the tab panel shows", place_off: "Off", place_right: "Right", place_left: "Left", place_bottom: "Bottom",
     maximize: "Maximize the panel: hide the board", restore: "Restore the board", menuMaximize: "Open maximized",
     tabNumber: "Tab {n}", noTab: "No tab open: click a card",
     newAgent: "New agent", hide: "Hide this column", showCol: "Show {name}", hideCol: "Hide {name}",
@@ -283,6 +292,7 @@ const STR = {
     filterCurrentTip: "Mostrando o espaço em que você está: {name}. Segue o espaço ativo. Clique para mudar.",
     filterOnlyTip: "Mostrando só {name}. Clique para mudar.",
     detailOn: "Ocultar o painel da aba", detailOff: "Mostrar o painel da aba", agentLabel: "Agente",
+    placeTip: "Onde o painel da aba aparece", place_off: "Desligado", place_right: "Direita", place_left: "Esquerda", place_bottom: "Embaixo",
     maximize: "Maximizar o painel: ocultar o quadro", restore: "Restaurar o quadro", menuMaximize: "Abrir maximizado",
     tabNumber: "Aba {n}", noTab: "Nenhuma aba aberta: clique num cartão",
     newAgent: "Novo agente", hide: "Ocultar esta coluna", showCol: "Mostrar {name}", hideCol: "Ocultar {name}",
@@ -396,7 +406,7 @@ export default class Kanban extends View {
     // Read props once and keep them: props() in a later callback can answer for another copy.
     this.props = (given && Object.keys(given).length ? given : props()) || {};
     const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "new-dialog", "columns-menu", "filter-menu",
-      "gear-menu", "buttons-menu"];
+      "place-menu", "gear-menu", "buttons-menu"];
     this.part = ["bar", "tab-head", ...overlays].includes(this.props.part) ? this.props.part : "board";
     if (this.part === "tab-head") return;
     if (overlays.includes(this.part)) {
@@ -451,6 +461,8 @@ export default class Kanban extends View {
       // gear button does. "kanban.buttons" opens the editor of the bar buttons. "kanban.maximize" maximizes
       // the tab panel or restores the board. "kanban.group" steps the lanes: none -> machine -> space.
       // "kanban.filter" steps the filter: all -> the current space -> all. "kanban.pairs" steps Stack columns: auto -> on -> off.
+      // "kanban.place" moves the tab panel: right -> bottom -> left -> right (and shows it). "kanban.place-off" hides it
+      // (setPlace "off" of another copy).
       cx.spawn(async (cx) => {
         for (;;) {
           const cmd = String(await nextCommand());
@@ -461,6 +473,8 @@ export default class Kanban extends View {
           else if (cmd === "group") this.stepGroup();
           else if (cmd === "filter") this.stepFilter();
           else if (cmd === "pairs") this.stepPairs();
+          else if (cmd === "place") this.stepPlace();
+          else if (cmd === "place-off") this.setPlace("off");
           else if (cmd.startsWith("group-")) this.openGroup(cmd.slice(6));
           else if (cmd.startsWith("panel-")) this.togglePanel(cmd.slice(6));
           cx.notify();
@@ -743,21 +757,101 @@ export default class Kanban extends View {
     if (a && a.tab !== tab) this.guard(() => Promise.all(this.showAgent(a)));
   }
 
-  /** Maximizes the tab panel (the board hides, the panel takes the rest of the row) or restores the board
-   *  with the panel width from before. Layout clicks, not layout.set: Herdr keeps them across restarts. */
-  toggleMaximize() {
-    // One copy acts: the bar, which also takes the command kanban.maximize.
-    if (this.part !== "bar") return run("kanban.maximize");
+  /** Maximizes the tab panel (the board hides, the panel takes the rest of its row or column) or restores the board
+   *  with the panel size from before; `off`: restores the board, then hides the panel. Layout clicks, not layout.set:
+   *  Herdr keeps them across restarts. */
+  toggleMaximize(off = false) {
+    // One copy acts: the bar, which also takes the commands kanban.maximize and kanban.place-off.
+    if (this.part !== "bar") return run(off ? "kanban.place-off" : "kanban.maximize");
+    // Waits for a place move to land (maxLater), so the clicks never mix two places and board and panel never both hide.
+    if (this.placing()) { this.pendingMax = off || this.pendingMax === "off" ? "off" : true; return; }
     const root = layout(), detail = find(root, "detail");
     if (!detail || !find(root, "board")) return;
+    const saved = this.panelSizes()[axis(placeOf(root) ?? "right")];
     if (this.maximized()) {
       const px = shared(KEY_MAXIMIZED);
       setShared(KEY_MAXIMIZED, null);
       return this.guard(() => Promise.all([run("layout.show", { id: "board" }),
-        run("layout.resize", { id: "detail", px: typeof px === "number" && px > 0 ? px : DETAIL_PX })]));
+        run("layout.resize", { id: "detail", px: typeof px === "number" && px > 0 ? px : saved }),
+        off ? run("layout.hide", { id: "detail" }) : null]));
     }
-    setShared(KEY_MAXIMIZED, detail.size?.px ?? DETAIL_PX);
-    this.guard(() => Promise.all([run("layout.hide", { id: "board" }), run("layout.resize", { id: "detail", weight: 1 }), this.showDetail()]));
+    if (off) return this.guard(() => run("layout.hide", { id: "detail" }));
+    setShared(KEY_MAXIMIZED, detail.size?.px ?? saved);
+    this.guard(() => Promise.all([this.showDetail(), run("layout.hide", { id: "board" }), run("layout.resize", { id: "detail", weight: 1 })]));
+  }
+
+  /** Where the tab panel shows, hidden or not: right, left or bottom. */
+  panelPlace() {
+    const v = shared(KEY_PLACE);
+    return PLACES.includes(v) ? v : "right";
+  }
+
+  /** The px of the tab panel at a side (its width) and at the bottom (its height). */
+  panelSizes() {
+    const v = shared(KEY_PANEL_SIZE) ?? {}, px = (n, d) => (typeof n === "number" && n > 0 ? n : d);
+    return { side: px(v.side, DETAIL_PX), bottom: px(v.bottom, DETAIL_BOTTOM_PX) };
+  }
+
+  /** Shows the tab panel at `place`; "off" hides it (a maximized one restores the board first) and keeps the place.
+   *  The bar moves the panel on its next render (placePanel). */
+  setPlace(place) {
+    if (place !== "off") {
+      setShared(KEY_PLACE, place);
+      return this.guard(() => this.showDetail());
+    }
+    if (this.maximized()) return this.toggleMaximize(true);
+    if (!this.detailHidden()) this.guard(() => run("layout.hide", { id: "detail" }));
+  }
+
+  /** Runs a maximize click that waited for a move of the panel (toggleMaximize), unless this render edits the tree. */
+  maxLater(busy) {
+    if (busy || !this.pendingMax) return;
+    const off = this.pendingMax === "off";
+    this.pendingMax = false;
+    this.toggleMaximize(off);
+  }
+
+  /** True while a move of the tab panel waits for its layout.set to land. */
+  placing() {
+    const tried = this.placeTry;
+    return Boolean(tried) && tried.renders < MIGRATE_RENDERS && Date.now() - tried.at < MIGRATE_MS;
+  }
+
+  stepPlace() { this.setPlace({ right: "bottom", bottom: "left", left: "right" }[this.panelPlace()]); }
+
+  /** Puts the tab panel where KEY_PLACE says, in one layout.set, and keeps the size of each place (see place.js).
+   *  One attempt per layout and place; true while it waits for its layout.set to land. */
+  placePanel(root) {
+    const want = this.panelPlace(), now = placeOf(root), name = shared("layout"), tried = this.placeTry;
+    // A new place comes from setPlace, which shows the panel: its move must not write back a stale hidden.
+    if (want !== this.placeSeen) { this.placeShow = this.placeSeen !== undefined; this.placeSeen = want; }
+    if (tried && (tried.name !== name || !now || now === tried.want)) {
+      // Landed. A size the person dragged earlier is a layout click and may beat the tree: set it once more.
+      if (tried.name === name && now && tried.px && find(root, "detail")?.size?.px !== tried.px) {
+        this.guard(() => run("layout.resize", { id: "detail", px: tried.px }));
+      }
+      this.placeTry = null;
+    } else if (tried) {
+      // A move from the old tree would save its sizes on the wrong axis: a newer place waits in shared until it lands.
+      if (++tried.renders <= MIGRATE_RENDERS && Date.now() - tried.at < MIGRATE_MS) return true;
+      if (tried.want === want) { this.placeShow = false; return false; }
+    }
+    const show = this.placeShow;
+    this.placeShow = false;
+    if (!now || now === want) return false;
+    const held = shared(KEY_MAXIMIZED), moved = movePanel(root, want, this.panelSizes(), held);
+    this.placeTry = { name, want, at: Date.now(), renders: moved ? 0 : MIGRATE_RENDERS, px: moved?.px };
+    if (!moved) return false;
+    const shown = find(moved.tree, "detail");
+    if (show && shown.hidden) shown.hidden = false;
+    try { run("layout.set", { layout: moved.tree }); } catch (e) {
+      console.log(`kanban: place: ${e?.message ?? e}`);
+      this.placeTry.renders = MIGRATE_RENDERS; // it will not land: no wait
+      return true;
+    }
+    setShared(KEY_PANEL_SIZE, moved.sizes);
+    if (moved.held !== held) setShared(KEY_MAXIMIZED, moved.held);
+    return true;
   }
 
   /** Reads dock/panels.json. A missing file is an empty list. A broken file keeps the last good list. */
@@ -807,7 +901,8 @@ export default class Kanban extends View {
     const missing = wanted.filter((e) => !body.children.some((c) => c.id === e.id));
     const stale = body.children.filter((c) => this.injected.has(c.id) && !keep.has(c.id));
     if (!missing.length && !stale.length) return false;
-    const key = `${shared("layout")}|${this.version}|${[...offMods()].sort().join(",")}`;
+    // The place is in the key: a move built on the tree before this edit landed drops the blocks, so try again.
+    const key = `${shared("layout")}|${placeOf(root)}|${this.version}|${[...offMods()].sort().join(",")}`;
     if (key === this.lastTry) return false;
     this.lastTry = key;
     const tree = JSON.parse(JSON.stringify(root)), target = find(tree, "panel-body");
@@ -831,7 +926,7 @@ export default class Kanban extends View {
   /** Makes the layout follow the mods that are on (the same as reconcile in mods/tabs-dock). A block of a mod
    *  that is off (shared KEY_OFF) is hidden; a block of an off replacement mod shows Herdr's own mod (ORIGINALS).
    *  When the mod is on again, the bar shows the block again, or puts the mod back. A side panel that shows a
-   *  hidden block closes. One attempt for each layout and wanted change, as in inject(). */
+   *  hidden block closes. One attempt for each layout and wanted change, as in inject(); true when it ran layout.set. */
   reconcile(root) {
     const name = shared("layout"), off = offMods();
     const tree = JSON.parse(JSON.stringify(root));
@@ -858,11 +953,12 @@ export default class Kanban extends View {
     const panel = sidePanel(tree), body = find(tree, "panel-body");
     if (panel && !panel.hidden && (body?.children ?? []).some((c) => c.id === body.active && c.hidden)) { panel.hidden = true; changed = true; }
     try { localStorage.setItem("kanban.kitOff", JSON.stringify(this.kitOff)); } catch {}
-    if (!changed) { this.reconcileTry = null; return; }
+    if (!changed) { this.reconcileTry = null; return false; }
     const attempt = `${name}|${JSON.stringify(tree)}`;
-    if (attempt === this.reconcileTry) return;
+    if (attempt === this.reconcileTry) return false;
     this.reconcileTry = attempt;
     run("layout.set", { layout: tree });
+    return true;
   }
 
   /** A button of dock/panels.json that is not a side panel: a tab or a command. */
@@ -1076,6 +1172,29 @@ export default class Kanban extends View {
       .child(div().w(13).flex_none().when(on, (e) => e.child(svg(icon("tick")).size(13).text_color(t.accent))));
     return v_flex().id("kb-flt-root").size_full().min_h(0).p(MENU_PAD).overflow_y_scrollbar()
       .children(this.filterItems().map((it) => (it.head ? head(it.head) : row(it, isOn(it.filter)))));
+  }
+
+  /** Opens the place menu of the tab panel at the pointer. */
+  openPlace() {
+    openOverlay({ mod: "kanban", kind: "popup", width: PLACE_W, height: MENU_PAD * 2 + PLACE_ROWS.length * MENU_ROW,
+      props: { part: "place-menu", lang: this.lang } });
+  }
+
+  /** The place menu: Off, Right, Left, Bottom, a tick on the one now. A click sets it and closes the menu. */
+  placeMenu(t) {
+    const now = this.detailHidden() ? "off" : this.panelPlace();
+    const row = (p) => {
+      const on = p === now;
+      return h_flex().id(`kb-place-${p}`).w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6).cursor_pointer()
+        .text_size(13).text_color(on ? t.accent : t.foreground)
+        .when(on, (e) => e.bg(tint(t.accent, "1a")))
+        .hover((s) => s.bg(on ? tint(t.accent, "33") : t.hover))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.setPlace(p); if (this.overlay) closeOverlay(this.overlay); })
+        .child(svg(icon(PLACE_ICONS[p])).size(15).flex_none().text_color(on ? t.accent : t.muted))
+        .child(div().flex_1().min_w(0).truncate().child(this.s(`place_${p}`)))
+        .child(div().w(13).flex_none().when(on, (e) => e.child(svg(icon("tick")).size(13).text_color(t.accent))));
+    };
+    return v_flex().id("kb-place-root").w_full().p(MENU_PAD).children(PLACE_ROWS.map(row));
   }
 
   /** The gear button opens a menu: the look of the board, the columns, Herdr's settings, the editor of the bar
@@ -1911,16 +2030,18 @@ export default class Kanban extends View {
    *  no `panel-body`. `iconOnly`: the names go to the tooltips. Call it once per render: it also edits the layout. */
   panelItems(t, iconOnly = false) {
     const root = layout(), panel = sidePanel(root), body = find(root, "panel-body");
-    // One layout edit for each render: what older versions left first, then the panel edit, then the off mods.
-    const dropping = this.migrate(root);
-    if (!panel || !body) return [];
+    // One layout edit for each render: what older versions left first, then the place of the tab panel,
+    // then the panel edit, then the off mods.
+    const dropping = this.migrate(root) || this.placePanel(root);
+    if (!panel || !body) { this.maxLater(dropping); return []; }
     // The entries that may use the panel stack: not the id of any other node of the layout.
     const taken = ids(root);
     for (const c of body.children ?? []) taken.delete(c.id);
     const live = this.liveEntries();
     const usable = live.filter((e) => e.opens !== "command" && !taken.has(e.id) && !PANELS.some((p) => p.id === e.id));
     const injecting = !dropping && this.loaded ? this.inject(root, body, usable.filter((e) => e.opens === "panel")) : false;
-    if (!dropping && !injecting) this.reconcile(root);
+    const reconciling = !dropping && !injecting && this.reconcile(root);
+    this.maxLater(dropping || injecting || reconciling);
     // A panel dialog that shows a mod that is now off closes.
     const openDialog = shared(KEY_PANEL_DIALOG);
     if (openDialog?.id && liveDialogs().has(openDialog.id)) {
@@ -1953,13 +2074,17 @@ export default class Kanban extends View {
     });
   }
 
-  /** Shows or hides the tab panel at the right of the board. Hiding a maximized panel brings the board back first. */
+  /** The tab panel, a split button: the button shows or hides it (hiding a maximized panel brings the board back
+   *  first), its arrow opens the place menu. The icon shows the place. */
   detailButton(t, iconOnly) {
-    const detail = this.detailHidden();
-    return panelButton(t, "kb-detail", icon("panel"), this.s("agentLabel"), !detail, () => {
-      if (!detail && this.maximized()) this.toggleMaximize();
-      run("layout.toggle", { id: "detail" });
-    }, this.s(detail ? "detailOff" : "detailOn"), iconOnly);
+    const hidden = this.detailHidden();
+    return [
+      panelButton(t, "kb-detail", icon(PLACE_ICONS[this.panelPlace()]), this.s("agentLabel"), !hidden, () => {
+        if (!hidden && this.maximized()) return this.toggleMaximize(true);
+        run("layout.toggle", { id: "detail" });
+      }, this.s(hidden ? "detailOff" : "detailOn"), iconOnly),
+      menuArrow(t, "kb-detail-place", !hidden, () => this.openPlace(), this.s("placeTip")),
+    ];
   }
 
   /** The filter: a funnel with what the board shows (only the funnel in compact), lit while it limits the cards. */
@@ -2066,7 +2191,7 @@ export default class Kanban extends View {
         const width = Math.round(size.width);
         if (width !== this.barW) { this.barW = width; cx.notify(); }
       })
-      .child(scroller([search, this.groupControl(t), buttonGroup(t, [this.detailButton(t, iconOnly)])]))
+      .child(scroller([search, this.groupControl(t), buttonGroup(t, this.detailButton(t, iconOnly))]))
       // Nothing here stops the press, so the window drags by it also while the strip is full.
       .child(div().w(16).h_full().flex_none())
       .child(settingsButton)
@@ -2085,6 +2210,7 @@ export default class Kanban extends View {
     if (this.part === "new-dialog") return this.newDialog(t);
     if (this.part === "columns-menu") return this.columnsMenu(t);
     if (this.part === "filter-menu") return this.filterMenu(t);
+    if (this.part === "place-menu") return this.placeMenu(t);
     if (this.part === "gear-menu") return this.gearMenu(t);
     if (this.part === "buttons-menu") return this.buttonsMenu(t);
     if (this.part === "tab-head") return this.tabHead(t);
