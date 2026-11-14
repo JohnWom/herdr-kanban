@@ -7,8 +7,8 @@ const OTHER = "other";
 export const inColumn = (list, id) => list.filter((a) => a.status === id)
   .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.seq - a.seq);
 
-/** The lanes of `list` by "machine" or by "space", in the order they show; only lanes that hold an agent.
- *  A lane is { id, machine (null: this computer), space (null by machine and for OTHER), agents }.
+/** The lanes of `list` by "machine" or by "space", in the order they show; only lanes that hold a card.
+ *  A lane is { id, machine (null: this computer), space (null by machine and for OTHER), agents (its cards, terminal tabs too) }.
  *  By machine: this computer first, then the machines in the order of `spaces`, then the machines
  *  with no space by name. By space: the order of `spaces` (this computer first, then the machines
  *  by name), then OTHER. */
@@ -40,9 +40,9 @@ export function groupLanes(list, by, spaces, machineOf) {
   return [...map.values()].sort((x, y) => place(x) - place(y));
 }
 
-/** The addresses in reading order: lane by lane, column by column; the lanes in `folded` left out. */
+/** The cards in reading order: lane by lane, column by column; the lanes in `folded` left out. */
 export const laneOrder = (lanes, columns, folded) => lanes.filter((g) => !folded.has(g.id))
-  .flatMap((g) => columns.flatMap((id) => inColumn(g.agents, id))).map((a) => a.address);
+  .flatMap((g) => columns.flatMap((id) => inColumn(g.agents, id)));
 
 /** The places of the board's row: one column each; with `groups` (stacked), the columns of a group share the place
  *  of the first of them, one under the other. */
@@ -56,13 +56,13 @@ export function placesOf(cols, groups) {
   return places;
 }
 
-/** The card `step` (1 or -1) away from the selected one in `order` (agents), round the end. Selected: the card at
- *  `from` (an address), else of tab `tab` the one of terminal `terminal`, else of pane `pane`, else its first;
- *  none: the first card (1) or the last (-1). */
+/** The card `step` (1 or -1) away from the selected one in `order` (cards), round the end. Selected: the card at
+ *  `from` (an address, or the tab of a card without one), else of tab `tab` the one of terminal `terminal`, else of
+ *  pane `pane`, else its first; none: the first card (1) or the last (-1). */
 export function nextCard(order, { from, tab, terminal, pane }, step) {
   if (!order.length) return null;
   const lit = order.filter((a) => a.tab === tab);
-  const at = (from != null && order.find((a) => a.address === from))
+  const at = (from != null && order.find((a) => (a.address ?? a.tab) === from))
     || (terminal != null && lit.find((a) => a.address === terminal))
     || (pane != null && lit.find((a) => a.pane === pane)) || lit[0];
   const i = order.indexOf(at);
