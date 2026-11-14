@@ -28,7 +28,7 @@ import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pi
  *  "<machine>/<terminal>". */
 const machineOf = (a) => (a?.term ? a.machine : String(a?.address ?? "").includes("/") ? a.address.split("/")[0] : null);
 import { WaitingTracker } from "./waiting.js";
-import { inColumn, groupLanes, laneOrder, placesOf, nextCard } from "./lanes.js";
+import { inColumn, groupLanes, laneOrder, placesOf, slotsOf, slotsWidth, nextCard } from "./lanes.js";
 import { parseFilter, migrateFilter, resolveFilter, applyFilter } from "./filter.js";
 import { pairsOf, stacks, barLook } from "./density.js";
 import { TERMINALS, terminalTabs } from "./terminals.js";
@@ -81,6 +81,7 @@ const WIDTHS = [150, 180, 220, 260, 320, 400, null];
 const MIN_COLUMN = 150; // narrowest a column may be before the board scrolls
 const MIN_COLUMN_COMPACT = 120; // the same, on a compact board
 const GAP = 12, GAP_COMPACT = 8; // between the columns
+const STUB_W = 36; // px: a hidden column in the row of columns (see stub)
 
 // The bar (density) and the board (pairs), set in the gear menu. Auto goes by the width of the part (on_size_change,
 // the same px as .w()): the bar shows icons below BAR_WIDE and all names from LABELS_WIDE; the board stacks its pairs
@@ -140,7 +141,6 @@ const PANELS = [
 const PANEL_GROUPS = { git: { label: "Git", icon: icon("git") } };
 const MENU_W = 220, MENU_PAD = 5, MENU_HEAD = 26, MENU_ROW = 32; // px: the menu of a group button (and of the columns)
 const FILTER_W = 260, FILTER_MAX = 440; // px: the filter menu (its width, the tallest it gets before it scrolls)
-const MORE_W = 104; // px: the chip after the column heads that names the hidden columns
 const CLONE_W = 270; // px: the menu of the duplicate button of a card
 const CARD_MENU_W = 250; // px: the right-click menu of a card
 const RENAME_W = 300, RENAME_ROW = 40; // px: the rename popup (its width and its field row)
@@ -237,8 +237,7 @@ const STR = {
     tabNumber: "Tab {n}", noTab: "No tab open: click a card",
     newAgent: "New agent", hide: "Hide this column", showCol: "Show {name}", hideCol: "Hide {name}",
     emptyCol: "No agents here", emptyTerminals: "No tab without an agent", emptyColSearch: "No match",
-    allHidden: "All columns are hidden", allHiddenHint: "Show a column to see its agents.", showAll: "Show all columns",
-    moreCols: "＋ {n} hidden", moreColsTip: "Hidden: {names}. Click to choose the columns.",
+    allHidden: "All columns are hidden", allHiddenHint: "Click a column above to show its cards.", showAll: "Show all columns",
     none: "No agents yet", noneHint: "Start an agent with the New agent button. It appears here as a card, and moves between columns when its status changes.",
     pin: "Pin to the top of its column", unpin: "Unpin",
     now: "just now", min: "{n} min ago", hour: "{n} h ago", day: "{n} d ago",
@@ -301,8 +300,7 @@ const STR = {
     tabNumber: "Aba {n}", noTab: "Nenhuma aba aberta: clique num cartão",
     newAgent: "Novo agente", hide: "Ocultar esta coluna", showCol: "Mostrar {name}", hideCol: "Ocultar {name}",
     emptyCol: "Nenhum agente aqui", emptyTerminals: "Nenhuma aba sem agente", emptyColSearch: "Nada encontrado",
-    allHidden: "Todas as colunas estão ocultas", allHiddenHint: "Mostre uma coluna para ver os agentes dela.", showAll: "Mostrar todas as colunas",
-    moreCols: "＋ {n} ocultas", moreColsTip: "Ocultas: {names}. Clique para escolher as colunas.",
+    allHidden: "Todas as colunas estão ocultas", allHiddenHint: "Clique numa coluna acima para mostrar os cartões dela.", showAll: "Mostrar todas as colunas",
     none: "Nenhum agente ainda", noneHint: "Inicie um agente com o botão Novo agente. Ele aparece aqui como um cartão e muda de coluna quando o status muda.",
     pin: "Fixar no topo da coluna", unpin: "Desafixar",
     now: "agora", min: "há {n} min", hour: "há {n} h", day: "há {n} d",
@@ -1165,7 +1163,7 @@ export default class Kanban extends View {
     if (this.overlay) closeOverlay(this.overlay);
   }
 
-  /** Opens the columns menu at the pointer (the chip of the hidden columns, a right click on a column head). */
+  /** Opens the columns menu at the pointer (a right click on the board, a column head or a hidden column). */
   openColumns() {
     openOverlay({ mod: "kanban", kind: "popup", width: MENU_W, height: MENU_PAD * 2 + MENU_HEAD + this.columns().length * MENU_ROW,
       props: { part: "columns-menu", lang: this.lang, waiting: this.props.waiting, counts: this.columnCounts() } });
@@ -1971,15 +1969,16 @@ export default class Kanban extends View {
         .child(iconButton(t, `hide-${c.id}`, "eye-off", () => this.toggleColumn(c.id), { tooltip: this.s("hide"), size: btn, glyph: compact ? 12 : 14, color: t.dim })));
   }
 
-  /** "＋ N hidden" after the column heads, as tall as a head: it opens the columns menu. */
-  moreCols(t, more, compact) {
-    return h_flex().w(MORE_W).h(compact ? 42 : 50).flex_none().items_center()
-      .child(h_flex().id("kb-more-cols").h(26).px(10).min_w(0).items_center().rounded(13).cursor_pointer()
-        .border_1().border_dashed().border_color(t.border).text_size(12).text_color(t.muted)
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .tooltip(this.s("moreColsTip", { names: more.map((c) => this.s(c.id)).join(", ") }))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.openColumns(); })
-        .child(div().truncate().child(this.s("moreCols", { n: more.length }))));
+  /** Hidden column `c` in the row of columns: a dim box as tall as a head with its icon and card count; a click shows it. */
+  stub(c, count, t, compact) {
+    const color = statusColor(t, c.id);
+    return v_flex().id(`stub-${c.id}`).w(STUB_W).h(compact ? 42 : 50).flex_none().items_center().justify_center().gap(compact ? 2 : 4)
+      .rounded(compact ? 12 : 16).cursor_pointer().border_1().border_dashed().border_color(tint(color, "44"))
+      .text_size(10).font_semibold().text_color(t.dim).hover((s) => s.bg(t.hover))
+      .tooltip(this.s("showCol", { name: this.s(c.id) }))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.toggleColumn(c.id); })
+      .child(svg(icon(c.symbol)).size(compact ? 12 : 14).text_color(tint(color, "88")))
+      .child(String(count));
   }
 
   /** The cards of `list` in `el`, with the padding and the gap of a compact or normal board. */
@@ -2024,42 +2023,44 @@ export default class Kanban extends View {
     }
     const shown = this.visible();
     this.shown = shownTab().id; // the cards of the tab in the panel show as selected
-    const cols = this.columns().filter((c) => !hidden.has(c.id));
-    const more = this.columns().filter((c) => hidden.has(c.id));
+    const all = this.columns(), cols = all.filter((c) => !hidden.has(c.id));
     const ids = cols.map((c) => c.id);
     const by = this.grouping();
     const lanes = this.lanes(shown, ids);
+    const stub = (c, compact) => this.stub(c, shown.filter((a) => a.status === c.id).length, t, compact);
     if (!cols.length) {
       setAgentOrder([]);
       boardNow().stacks = undefined;
-      return this.emptyState(t, this.s("allHidden"), this.s("allHiddenHint"),
-        button(t, "kb-show-all", this.s("showAll"), () => setShared(KEY_HIDDEN, []), { primary: true, symbol: "eye" }));
+      return v_flex().size_full().min_h(0).gap(GAP)
+        .child(h_flex().id("kb-stubs").flex_none().gap(GAP).overflow_x_scrollbar().children(all.map((c) => stub(c, false))))
+        .child(this.emptyState(t, this.s("allHidden"), this.s("allHiddenHint"),
+          button(t, "kb-show-all", this.s("showAll"), () => setShared(KEY_HIDDEN, []), { primary: true, symbol: "eye" })).flex_1().min_h(0));
     }
-    const compact = this.boardCompact(cols.length * COLUMN_WIDE + (cols.length - 1) * GAP + (more.length ? GAP + MORE_W : 0));
-    const places = this.places(cols, compact);
+    const compact = this.boardCompact(slotsWidth(slotsOf(all, hidden, []), COLUMN_WIDE, STUB_W, GAP));
+    const slots = slotsOf(all, hidden, compact ? GROUPS : []);
+    const places = slots.flatMap((s) => (s.place ? [s.place] : []));
     // Herdr's agent.next and agent.prev walk the agent cards in the order they show.
     setAgentOrder(this.cardOrder(shown, places, lanes).filter((a) => !a.term).map((a) => a.address));
     // A row that scrolls sideways lays its children out at their content width, so the columns
     // would not share the board. Scroll only when the places do not fit at their minimum width,
     // and then give each place exactly that width.
-    const n = places.length;
     const min = compact ? MIN_COLUMN_COMPACT : MIN_COLUMN, gap = compact ? GAP_COMPACT : GAP;
-    const width = n * min + (n - 1) * gap + (more.length ? gap + MORE_W : 0);
+    const width = slotsWidth(slots, min, STUB_W, gap);
     const fixed = typeof this.boardW === "number" && this.boardW < width;
     const opts = { compact, fixed, summary: this.summary(compact) };
-    if (lanes) return this.laneBoard(t, lanes, by, places, shown, searching, { ...opts, gap, width, more });
+    if (lanes) return this.laneBoard(t, lanes, by, slots, shown, searching, { ...opts, gap, width, stub });
     return h_flex().id("kb-columns").size_full().min_h(0).gap(gap)
       .when(fixed, (e) => e.overflow_x_scrollbar())
-      .children(places.map((p) => p.length === 1
-        ? this.column(p[0], inColumn(shown, p[0].id), t, searching, opts)
-        : this.sized(v_flex().id(`place-${p[0].id}`).h_full().min_h(0).gap(gap), compact, fixed)
-          .children(p.map((c) => this.column(c, inColumn(shown, c.id), t, searching, { ...opts, stacked: true })))))
-      .when(more.length > 0, (e) => e.child(v_flex().h_full().flex_none().child(this.moreCols(t, more, compact))));
+      .children(slots.map((s) => (s.stub ? v_flex().h_full().flex_none().child(stub(s.stub, compact))
+        : s.place.length === 1 ? this.column(s.place[0], inColumn(shown, s.place[0].id), t, searching, opts)
+          : this.sized(v_flex().id(`place-${s.place[0].id}`).h_full().min_h(0).gap(gap), compact, fixed)
+            .children(s.place.map((c) => this.column(c, inColumn(shown, c.id), t, searching, { ...opts, stacked: true }))))));
   }
 
   /** The board in lanes: the column heads once on top, under them the lanes, which scroll as one list.
-   *  A lane row has the places of the board, as wide as the heads, and grows with its tallest column. */
-  laneBoard(t, lanes, by, places, shown, searching, { compact, fixed, summary, gap, width, more }) {
+   *  A lane row has the slots of the board, as wide as the heads (an empty spot under a hidden column), and grows
+   *  with its tallest column. */
+  laneBoard(t, lanes, by, slots, shown, searching, { compact, fixed, summary, gap, width, stub }) {
     const folded = this.collapsed();
     // A row that does not center its children: the boxes of a row stretch to its height.
     const row = () => div().flex().flex_none().gap(gap).when(fixed, (e) => e.w(width)).when(!fixed, (e) => e.w_full());
@@ -2068,20 +2069,21 @@ export default class Kanban extends View {
       : this.sized(v_flex().gap(gap), compact, fixed)
         .children(p.map((c, i) => (i === p.length - 1 ? box(c).w_full().flex_1() : box(c).w_full().flex_none()))));
     // Top-aligned, so a single head does not stretch to a compact pair.
-    const heads = row().items_start().children(places.map((p) => place(p, (c) => {
+    const heads = row().items_start().children(slots.map((s) => (s.stub ? stub(s.stub, compact) : place(s.place, (c) => {
       const count = inColumn(shown, c.id).length;
       return this.frame(v_flex().id(`col-${c.id}`), c, t, compact, c.id === "blocked" && count > 0).child(this.columnHead(c, count, t, compact));
-    }))).when(more.length > 0, (e) => e.child(this.moreCols(t, more, compact)));
+    }))));
+    const cols = slots.flatMap((s) => s.place ?? []);
     const lane = (g) => {
       const shut = folded.has(g.id);
       const label = by === "machine" ? (g.machine ? null : this.s("thisComputer"))
         : g.space ? g.space.name || base(g.space.folder) || g.space.id : this.s("other");
       return v_flex().w_full().flex_none().gap(compact ? 4 : 6)
-        .child(this.laneHead(g, label, places.flat(), t, shut))
-        .when(!shut, (e) => e.child(row().children(places.map((p) => place(p, (c) => {
+        .child(this.laneHead(g, label, cols, t, shut))
+        .when(!shut, (e) => e.child(row().children(slots.map((s) => (s.stub ? div().w(STUB_W).flex_none() : place(s.place, (c) => {
           const list = inColumn(g.agents, c.id);
           return this.frame(this.cardStack(v_flex().py(compact ? 7 : 10), list, t, compact, summary), c, t, compact, c.id === "blocked" && list.length > 0);
-        }))).when(more.length > 0, (r) => r.pr(gap + MORE_W))));
+        }))))));
     };
     return v_flex().id("kb-board").size_full().min_h(0).gap(gap)
       .when(fixed, (e) => e.overflow_x_scrollbar())
@@ -2302,7 +2304,9 @@ export default class Kanban extends View {
     if (this.part === "tab-head") return this.tabHead(t);
     this.syncWaiting(cx);
     if (this.part === "bar") return this.bar(t);
+    // A right click that no card or column head takes (empty board, lanes, a hidden column) opens the columns menu.
     return v_flex().id("kanban").size_full().min_h(0).min_w(0).text_color(t.foreground).text_size(13)
+      .on_mouse_down("right", () => this.openColumns())
       .on_size_change((size, cx) => {
         const w = Math.round(size.width);
         if (w !== this.boardW) { this.boardW = w; cx.notify(); }

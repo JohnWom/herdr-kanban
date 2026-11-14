@@ -56,6 +56,17 @@ export function placesOf(cols, groups) {
   return places;
 }
 
+/** The row of the board for all the columns `cols` in their order: a { place } (see placesOf) for the shown ones,
+ *  a { stub: column } at the spot of each column in `hidden`. A place sits at the spot of its first column. */
+export function slotsOf(cols, hidden, groups) {
+  const places = placesOf(cols.filter((c) => !hidden.has(c.id)), groups);
+  return cols.flatMap((c) => (hidden.has(c.id) ? [{ stub: c }] : places.filter((p) => p[0] === c).map((place) => ({ place }))));
+}
+
+/** The width of `slots` (px): `place` for each place, `stub` for each stub, `gap` between them. */
+export const slotsWidth = (slots, place, stub, gap) =>
+  slots.reduce((w, s) => w + (s.stub ? stub : place), 0) + Math.max(0, slots.length - 1) * gap;
+
 /** The card `step` (1 or -1) away from the selected one in `order` (cards), round the end. Selected: the card at
  *  `from` (an address, or the tab of a card without one), else of tab `tab` the one of terminal `terminal`, else of
  *  pane `pane`, else its first; none: the first card (1) or the last (-1). */
