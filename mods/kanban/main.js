@@ -36,7 +36,7 @@ const KEY_DISMISSED = "kanban.waiting.dismissed"; // { "<terminal>": turn }: car
 const KEY_QUERY = "kanban.query"; // the search text
 const KEY_SCOPE = "kanban.scope"; // "all" | "space"
 const KEY_SCOPE_SPACE = "kanban.scopeSpace"; // the space id the filter keeps, taken when it was turned on
-const KEY_MAXIMIZED = "kanban.maximized"; // px of the tab panel before it was maximized; null: not maximized
+const KEY_MAXIMIZED = "kanban.maximized"; // px of the tab panel before it was maximized (maximized itself is board.hidden)
 const KEY_WIDTH = "kanban.width"; // widest a column may be, in px; absent: columns share the board
 const KEY_ORDER = "kanban.order"; // ids of the columns, left to right; absent: the order of COLUMNS
 const KEY_DENSITY = "kanban.density"; // "auto" | "compact" | "normal"; absent: auto
@@ -95,6 +95,7 @@ const OLD_SHELL = "kanban-shell";
 // The tab panel ("detail"): its head (part "tab-head") over the active tab. Older versions had a block
 // { agent: "focused" } here and a stack "view" with a Terminals view; migrate() swaps them for this.
 const DETAIL_PX = 460;
+const MIGRATE_RENDERS = 20, MIGRATE_MS = 3000; // how long migrate() waits for its layout.set to land
 const TAB_PANEL = [
   { id: "detail-head", type: "block", content: { mod: "kanban", props: { part: "tab-head" } }, size: { px: 36 } },
   { id: "detail-tab", type: "block", padding: 8, content: { tab: "active", pane: {
@@ -689,21 +690,17 @@ export default class Kanban extends View {
   /** Maximizes the tab panel (the board hides, the panel takes the rest of the row) or restores the board
    *  with the panel width from before. Layout clicks, not layout.set: Herdr keeps them across restarts. */
   toggleMaximize() {
-    // The bar keeps the old width in its localStorage (shared() may not outlive a restart; the clicks do).
+    // One copy acts: the bar, which also takes the command kanban.maximize.
     if (this.part !== "bar") return run("kanban.maximize");
     const root = layout(), detail = find(root, "detail");
     if (!detail || !find(root, "board")) return;
     if (this.maximized()) {
-      let px = null;
-      try { px = Number(localStorage.getItem(KEY_MAXIMIZED)) || null; localStorage.removeItem(KEY_MAXIMIZED); } catch {}
-      px = px ?? shared(KEY_MAXIMIZED);
+      const px = shared(KEY_MAXIMIZED);
       setShared(KEY_MAXIMIZED, null);
       return this.guard(() => Promise.all([run("layout.show", { id: "board" }),
         run("layout.resize", { id: "detail", px: typeof px === "number" && px > 0 ? px : DETAIL_PX })]));
     }
-    const px = detail.size?.px ?? DETAIL_PX;
-    try { localStorage.setItem(KEY_MAXIMIZED, String(px)); } catch {}
-    setShared(KEY_MAXIMIZED, px);
+    setShared(KEY_MAXIMIZED, detail.size?.px ?? DETAIL_PX);
     this.guard(() => Promise.all([run("layout.hide", { id: "board" }), run("layout.resize", { id: "detail", weight: 1 }), this.showDetail()]));
   }
 
@@ -1117,7 +1114,7 @@ export default class Kanban extends View {
       // Act first, then close: this copy of the mod ends with its popup.
       if (!argv) notify({ title: this.s("cloneFail"), body: this.s("noCommand"), level: "error", timeout: 6000 });
       else if (where === "worktree") openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280, props: { space: a.space, folder, action: "new", argv } });
-      else run("tab.new", { space: a.space, argv, ...(folder ? { folder } : {}) });
+      else { run("tab.new", { space: a.space, argv, ...(folder ? { folder } : {}) }); this.showDetail(); }
       this.closeDialog();
     });
   }
@@ -1299,9 +1296,10 @@ export default class Kanban extends View {
     const space = this.chosenSpace(), tab = this.tabField.value().trim(), name = this.spaceField.value().trim();
     this.newBusy = true;
     // Act first, then close: this copy of the mod ends with its dialog.
-    this.guard(() => (space != null
+    this.guard(() => Promise.resolve(space != null
       ? run("tab.new", { space, ...(tab ? { name: tab } : {}), ...(argv ? { argv } : {}) })
-      : run("space.new", { machine: this.machine ?? "", ...(name ? { name } : {}), ...(tab ? { tab } : {}), ...(argv ? { argv } : {}) })),
+      : run("space.new", { machine: this.machine ?? "", ...(name ? { name } : {}), ...(tab ? { tab } : {}), ...(argv ? { argv } : {}) }))
+      .then(() => this.showDetail()),
       () => { this.newBusy = false; this.closeDialog(); });
   }
 
@@ -1396,8 +1394,8 @@ export default class Kanban extends View {
 
   /** Brings a layout of an older version up to date in one layout.set: takes out the shell block (and
    *  unwraps its "board-main" column), drops the Terminals view (unwraps the stack "view" and its
-   *  "board-view" row when the stack holds nothing else) and turns the agent block "detail" into the tab panel. One attempt per layout;
-   *  true when it ran layout.set. */
+   *  "board-view" row when the stack holds nothing else) and turns the agent block "detail" into the tab panel, its head
+   *  in the `lang` of the bar or the board. One attempt per layout; true when it ran layout.set or waits for it. */
   migrate(root) {
     const shell = (c) => c.id === "shell" && c.content?.terminal;
     // A stack "view" with children of the person's own stays a stack; only the Terminals view leaves it.
@@ -1405,13 +1403,18 @@ export default class Kanban extends View {
     const old = (n) => shell(n) || n.id === "tabs-view" || view(n) || (n.id === "detail" && n.content?.agent)
       || (n.children ?? []).some(old);
     if (!root || !old(root)) return false;
-    const name = shared("layout");
-    if (this.migrateTry === name) return false;
-    this.migrateTry = name;
+    const name = shared("layout"), tried = this.migrateTry;
+    // Until layout.set lands, inject/reconcile would write the old tree back: wait for it, a few renders at most.
+    if (tried?.name === name) return ++tried.renders <= MIGRATE_RENDERS && Date.now() - tried.at < MIGRATE_MS;
+    this.migrateTry = { name, at: Date.now(), renders: 0 };
+    const langOf = (n) => (n.content?.mod === "kanban" && ["bar", "board"].includes(n.content.props?.part) && n.content.props.lang)
+      || (n.children ?? []).reduce((l, c) => l || langOf(c), null);
+    const lang = langOf(root);
     const fix = (node) => {
       if (node.id === "detail" && node.content?.agent) {
-        const { content, ...rest } = node;
-        return { ...rest, type: "column", resizable: false, children: JSON.parse(JSON.stringify(TAB_PANEL)) };
+        const { content, ...rest } = node, children = JSON.parse(JSON.stringify(TAB_PANEL));
+        if (lang) children[0].content.props.lang = lang;
+        return { ...rest, type: "column", resizable: false, children };
       }
       if (!Array.isArray(node.children)) return node;
       node.children = node.children
@@ -1420,7 +1423,10 @@ export default class Kanban extends View {
       if (node.type === "stack" && node.active === "tabs-view") node.active = node.children[0]?.id;
       return node.id === "board-main" && node.children.length === 1 ? node.children[0] : node;
     };
-    try { run("layout.set", { layout: fix(JSON.parse(JSON.stringify(root))) }); } catch (e) { console.log(`kanban: migrate: ${e?.message ?? e}`); }
+    try { run("layout.set", { layout: fix(JSON.parse(JSON.stringify(root))) }); } catch (e) {
+      console.log(`kanban: migrate: ${e?.message ?? e}`);
+      this.migrateTry.renders = MIGRATE_RENDERS; // it will not land: no wait
+    }
     return true;
   }
 
@@ -1834,7 +1840,7 @@ export default class Kanban extends View {
   /** None / machine / space: how the board splits into lanes. Icons only, the tooltips name them. */
   groupControl(t) {
     const now = this.grouping();
-    return segmented(t, GROUPINGS.map((g) => ({ id: `kb-group-${g}`, symbol: GROUP_ICONS[g], active: g === now,
+    return segmented(t, GROUPINGS.map((g) => ({ id: `kb-lanes-${g}`, symbol: GROUP_ICONS[g], active: g === now,
       tooltip: this.s(`group_${g}`), onClick: () => setShared(KEY_GROUP, g) })));
   }
 
