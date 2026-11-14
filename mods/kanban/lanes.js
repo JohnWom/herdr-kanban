@@ -43,3 +43,28 @@ export function groupLanes(list, by, spaces, machineOf) {
 /** The addresses in reading order: lane by lane, column by column; the lanes in `folded` left out. */
 export const laneOrder = (lanes, columns, folded) => lanes.filter((g) => !folded.has(g.id))
   .flatMap((g) => columns.flatMap((id) => inColumn(g.agents, id))).map((a) => a.address);
+
+/** The places of the board's row: one column each; with `groups` (stacked), the columns of a group share the place
+ *  of the first of them, one under the other. */
+export function placesOf(cols, groups) {
+  const places = [];
+  for (const c of cols) {
+    const group = groups.find((g) => g.includes(c.id));
+    const pair = group ? places.find((p) => group.includes(p[0].id)) : null;
+    if (pair) pair.push(c); else places.push([c]);
+  }
+  return places;
+}
+
+/** The card `step` (1 or -1) away from the selected one in `order` (agents), round the end. Selected: the card at
+ *  `from` (an address), else of tab `tab` the one of terminal `terminal`, else of pane `pane`, else its first;
+ *  none: the first card (1) or the last (-1). */
+export function nextCard(order, { from, tab, terminal, pane }, step) {
+  if (!order.length) return null;
+  const lit = order.filter((a) => a.tab === tab);
+  const at = (from != null && order.find((a) => a.address === from))
+    || (terminal != null && lit.find((a) => a.address === terminal))
+    || (pane != null && lit.find((a) => a.pane === pane)) || lit[0];
+  const i = order.indexOf(at);
+  return order[i < 0 ? (step > 0 ? 0 : order.length - 1) : (i + step + order.length) % order.length];
+}

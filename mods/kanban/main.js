@@ -26,7 +26,7 @@ import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pi
 /** The machine of an agent on another computer: its address is "<machine>/<terminal>". */
 const machineOf = (a) => (String(a?.address ?? "").includes("/") ? a.address.split("/")[0] : null);
 import { WaitingTracker } from "./waiting.js";
-import { inColumn, groupLanes, laneOrder } from "./lanes.js";
+import { inColumn, groupLanes, laneOrder, placesOf, nextCard } from "./lanes.js";
 import { parseFilter, migrateFilter, resolveFilter, applyFilter } from "./filter.js";
 import { pairsOf, stacks, barLook } from "./density.js";
 import { PLACES, axis, placeOf, movePanel } from "./place.js";
@@ -63,7 +63,7 @@ const DIALOG_TITLE = 36; // px: the title row of a panel dialog
 // name a dialog that is gone: the bar trusts it only when its id is here. On globalThis, not in the module:
 // a layout switch starts a new copy of the bar with a new module, and the dialog stays open.
 const liveDialogs = () => (globalThis.__kanbanPanelDialogs ??= new Set());
-// What Auto of "Stack columns" does on the board now ({ stacks }), for the gear menu, which the bar opens.
+// What Auto of "Stack columns" does on the board now ({ stacks }), for the gear menu and kanban.next / prev (the bar).
 const boardNow = () => (globalThis.__kanbanBoard ??= {});
 // The mods that the person turned off in the mods-hub: a list of mod folder names. The same key and the same rules
 // as in mods/tabs-dock. The bar shows no button of an entry whose mod is off, hides the blocks of an off mod in its
@@ -462,7 +462,7 @@ export default class Kanban extends View {
       // the tab panel or restores the board. "kanban.group" steps the lanes: none -> machine -> space.
       // "kanban.filter" steps the filter: all -> the current space -> all. "kanban.pairs" steps Stack columns: auto -> on -> off.
       // "kanban.place" moves the tab panel: right -> bottom -> left -> right (and shows it). "kanban.place-off" hides it
-      // (setPlace "off" of another copy).
+      // (setPlace "off" of another copy). "kanban.next" / "kanban.prev" select the next / previous card, as a click does.
       cx.spawn(async (cx) => {
         for (;;) {
           const cmd = String(await nextCommand());
@@ -475,6 +475,8 @@ export default class Kanban extends View {
           else if (cmd === "pairs") this.stepPairs();
           else if (cmd === "place") this.stepPlace();
           else if (cmd === "place-off") this.setPlace("off");
+          else if (cmd === "next") this.stepCard(1);
+          else if (cmd === "prev") this.stepCard(-1);
           else if (cmd.startsWith("group-")) this.openGroup(cmd.slice(6));
           else if (cmd.startsWith("panel-")) this.togglePanel(cmd.slice(6));
           cx.notify();
@@ -643,6 +645,23 @@ export default class Kanban extends View {
 
   stepGroup() { setShared(KEY_GROUP, GROUPINGS[(GROUPINGS.indexOf(this.grouping()) + 1) % GROUPINGS.length]); }
 
+  /** The lanes of `shown` in the columns `ids`, or null without lanes. Only the cards of those columns, so a lane
+   *  with none of them goes away. */
+  lanes(shown, ids) {
+    const by = this.grouping();
+    return by === "none" ? null : groupLanes(shown.filter((a) => ids.includes(a.status)), by, spaces(), machineOf);
+  }
+
+  /** The places of the board for the columns `cols`; `stacked`: Working with Waiting, Done with Idle share one. */
+  places(cols, stacked) { return placesOf(cols, stacked ? GROUPS : []); }
+
+  /** The addresses of the cards in the order they show: place by place (top to bottom in one); the cards of a
+   *  folded lane left out. */
+  cardOrder(shown, places, lanes = this.lanes(shown, places.flat().map((c) => c.id))) {
+    const ids = places.flat().map((c) => c.id);
+    return lanes ? laneOrder(lanes, ids, this.collapsed()) : ids.flatMap((id) => inColumn(shown, id)).map((a) => a.address);
+  }
+
   /** The ids of the folded lanes. Ids of spaces that are gone stay: a machine that is offline lists none. */
   collapsed() {
     const list = shared(KEY_COLLAPSED);
@@ -705,6 +724,12 @@ export default class Kanban extends View {
     return stacks(this.pairs(), this.boardW, wide);
   }
 
+  /** Whether the board stacks now, for a copy without its width: Auto as the board last decided (not yet: no). */
+  stacked() {
+    const p = this.pairs();
+    return p === "auto" ? boardNow().stacks === true : p === "on";
+  }
+
   /** Agents after the filter and the search text. */
   visible() {
     const q = String(shared(KEY_QUERY) ?? "").trim().toLowerCase();
@@ -744,17 +769,28 @@ export default class Kanban extends View {
 
   showDetail() { return this.detailHidden() ? run("layout.show", { id: "detail" }) : null; }
 
-  /** After agent.next / agent.prev the panel follows: the tab of the new agent becomes active. Only once per
-   *  change of the focused agent, not when its tab shows already, and not when the shown tab changed too (the
-   *  person picked a tab), so it cannot loop or undo their pick. */
-  followAgent() {
-    const id = focused()?.agent ?? null, tab = shownTab().id, last = this.seen;
-    this.seen = { id, tab };
-    if (!last || !id || id === last.id || tab !== last.tab) return;
-    // With no earlier agent, or one that ended, Herdr falls back to some agent: not a pick to follow.
-    if (!last.id || !agents().some((x) => x.address === last.id)) return;
-    const a = agents().find((x) => x.address === id);
-    if (a && a.tab !== tab) this.guard(() => Promise.all(this.showAgent(a)));
+  /** kanban.next / kanban.prev: selects the card after (1) or before (-1) the selected one, round the end. The bar
+   *  computes the order itself, so it holds while the board is hidden. */
+  stepCard(step) {
+    const shown = this.visible(), hidden = this.hidden();
+    const places = this.places(this.columns().filter((c) => !hidden.has(c.id)), this.stacked());
+    const of = new Map(shown.map((a) => [a.address, a]));
+    // A key repeat comes before the last select lands, so it goes on from that card, not from the old focus.
+    const f = focused(), tab = shownTab().id, at = { from: this.steppedTo(), tab, terminal: f?.terminal, pane: f?.pane };
+    const a = nextCard(this.cardOrder(shown, places).map((id) => of.get(id)), at, step);
+    if (!a) return;
+    this.stepped = { address: a.address, tab: a.tab, was: { tab, terminal: f?.terminal } };
+    this.select(a);
+  }
+
+  /** The address of the card the last stepCard selected while the shown tab and the focused terminal are still on
+   *  their way there (each the old or the new one); else null, and it is forgotten. */
+  steppedTo() {
+    const s = this.stepped, tab = shownTab().id, term = focused()?.terminal;
+    const moving = s && [s.was.tab, s.tab].includes(tab) && [s.was.terminal, s.address].includes(term)
+      && !(tab === s.tab && term === s.address);
+    if (!moving) this.stepped = null;
+    return this.stepped?.address ?? null;
   }
 
   /** Maximizes the tab panel (the board hides, the panel takes the rest of its row or column) or restores the board
@@ -1934,25 +1970,17 @@ export default class Kanban extends View {
     const more = this.columns().filter((c) => hidden.has(c.id));
     const ids = cols.map((c) => c.id);
     const by = this.grouping();
-    // Only the cards of the shown columns, so a lane with none of them goes away.
-    const lanes = by === "none" ? null : groupLanes(shown.filter((a) => ids.includes(a.status)), by, spaces(), machineOf);
-    // agent.next and agent.prev walk the cards in the order they show.
-    setAgentOrder(lanes ? laneOrder(lanes, ids, this.collapsed()) : ids.flatMap((id) => inColumn(shown, id)).map((a) => a.address));
+    const lanes = this.lanes(shown, ids);
     if (!cols.length) {
+      setAgentOrder([]);
       boardNow().stacks = undefined;
       return this.emptyState(t, this.s("allHidden"), this.s("allHiddenHint"),
         button(t, "kb-show-all", this.s("showAll"), () => setShared(KEY_HIDDEN, []), { primary: true, symbol: "eye" }));
     }
     const compact = this.boardCompact(cols.length * COLUMN_WIDE + (cols.length - 1) * GAP + (more.length ? GAP + MORE_W : 0));
-    // Places in the row: one column each. On a compact board the columns of a group (Working with
-    // Waiting, Done with Idle) share one place, one under the other, at the place of the first of
-    // them in the order.
-    const places = [];
-    for (const c of cols) {
-      const group = compact ? GROUPS.find((g) => g.includes(c.id)) : null;
-      const pair = group ? places.find((p) => group.includes(p[0].id)) : null;
-      if (pair) pair.push(c); else places.push([c]);
-    }
+    const places = this.places(cols, compact);
+    // Herdr's agent.next and agent.prev walk the cards in the order they show.
+    setAgentOrder(this.cardOrder(shown, places, lanes));
     // A row that scrolls sideways lays its children out at their content width, so the columns
     // would not share the board. Scroll only when the places do not fit at their minimum width,
     // and then give each place exactly that width.
@@ -2153,7 +2181,7 @@ export default class Kanban extends View {
   }
 
   bar(t) {
-    this.followAgent(); // the bar shows in both modes, the board not while the panel is maximized
+    this.steppedTo(); // forgets the last step once the focus has landed or moved elsewhere
     const w = window();
     const wbtn = (id, glyph, action) => div().id(id).size(28).flex_none().flex().items_center().justify_center().rounded(7)
       .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
