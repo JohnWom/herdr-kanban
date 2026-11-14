@@ -1,6 +1,6 @@
 // Kanban for the Herdr app: every agent is a card in a column by status.
 // One mod, parts chosen by props.part:
-//   "bar"   the top bar: search, space filter, grouping, New agent, gear, panel buttons, window buttons.
+//   "bar"   the top bar: search, filter, grouping, New agent, gear, panel buttons, window buttons.
 //   "board" the columns with the cards; grouped, one swimlane per machine or space under the column heads.
 //   "tab-head" the head of the tab panel: the tab, its space and machine, the maximize button.
 //   "panel-title" the title row of a panel dialog (the bar opens it, see openDialog).
@@ -10,10 +10,11 @@
 //   "card-rename" the field that renames the tab of a card, a popup (the card menu opens it, see openRename).
 //   "new-dialog" the dialog that starts a session: machine, space, program, tab name (the bar and the card menu open it, see openNew).
 //   "columns-menu" every column with a tick to show or hide it, a popup (the board opens it, see openColumns).
+//   "filter-menu" what the board shows: all, the current space, a space or a machine, a popup (the bar opens it, see openFilter).
 //   "gear-menu" the menu of the gear button: the look of the board, the columns, Herdr's settings, Bar buttons and PowerMods,
 //               a popup (the bar opens it, see openGear).
 //   "buttons-menu" the editor of the order and the visibility of the panel buttons, a popup (the bar opens it, see openButtons).
-// The parts share their state through shared(): hidden columns, search text, scope.
+// The parts share their state through shared(): hidden columns, search text, filter.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState } from "gpui-base";
 import { agents, spaces, panes, machines, focused, layout, window, theme, props, shared, setShared, run, openOverlay, closeOverlay,
@@ -25,6 +26,7 @@ import { icon, tint, iconButton, columnChip, segmented, searchBox, textField, pi
 const machineOf = (a) => (String(a?.address ?? "").includes("/") ? a.address.split("/")[0] : null);
 import { WaitingTracker } from "./waiting.js";
 import { inColumn, groupLanes, laneOrder } from "./lanes.js";
+import { parseFilter, migrateFilter, resolveFilter, applyFilter } from "./filter.js";
 
 /** The icon of an entry of knownAgents: a one-color glyph is tinted, anything else is a picture. */
 const agentGlyph = (a, t) => (!a.icon ? svg(icon("bot")).size(15).flex_none().text_color(t.muted)
@@ -35,8 +37,8 @@ const KEY_HIDDEN = "kanban.hidden"; // ids of the hidden columns
 const KEY_WAITING = "kanban.waiting"; // "on" | "off"; absent: props.waiting (on unless it is false)
 const KEY_DISMISSED = "kanban.waiting.dismissed"; // { "<terminal>": turn }: cards the person sent back to Done/Idle, for that turn
 const KEY_QUERY = "kanban.query"; // the search text
-const KEY_SCOPE = "kanban.scope"; // "all" | "space"
-const KEY_SCOPE_SPACE = "kanban.scopeSpace"; // the space id the filter keeps, taken when it was turned on
+const KEY_FILTER = "kanban.filter"; // { kind: "all" | "current" | "space" | "machine", id? } (see filter.js); absent: all
+const OLD_SCOPE = "kanban.scope", OLD_SCOPE_SPACE = "kanban.scopeSpace"; // older versions; savedFilter() takes them over once
 const KEY_MAXIMIZED = "kanban.maximized"; // px of the tab panel before it was maximized (maximized itself is board.hidden)
 const KEY_WIDTH = "kanban.width"; // widest a column may be, in px; absent: columns share the board
 const KEY_ORDER = "kanban.order"; // ids of the columns, left to right; absent: the order of COLUMNS
@@ -121,6 +123,7 @@ const PANELS = [
 // The same as GROUPS in mods/tabs-dock.
 const PANEL_GROUPS = { git: { label: "Git", icon: icon("git") } };
 const MENU_W = 220, MENU_PAD = 5, MENU_HEAD = 26, MENU_ROW = 32; // px: the menu of a group button (and of the columns)
+const FILTER_W = 260, FILTER_MAX = 440; // px: the filter menu (its width, the tallest it gets before it scrolls)
 const MORE_W = 104; // px: the chip after the column heads that names the hidden columns
 const CLONE_W = 270; // px: the menu of the duplicate button of a card
 const CARD_MENU_W = 250; // px: the right-click menu of a card
@@ -207,8 +210,10 @@ const STR = {
     waitingOff: "Waiting column off: those agents show as Done or Idle. Click to turn it on.",
     notWaiting: "Not waiting: show it as Done or Idle",
     agents: (n) => (n === 1 ? "1 agent" : `${n} agents`),
-    scopeAllTip: "Showing every space. Click to show only {name}, the space you are in now.",
-    scopeSpaceTip: "Showing only {name}. Click to show every space.",
+    filterAll: "All", filterCurrent: "Current space", filterSpaces: "Spaces", filterMachines: "Machines",
+    filterAllTip: "Showing every agent. Click to choose a space or a machine.",
+    filterCurrentTip: "Showing the space you are in: {name}. It follows the active space. Click to change.",
+    filterOnlyTip: "Showing only {name}. Click to change.",
     detailOn: "Hide the tab panel", detailOff: "Show the tab panel", agentLabel: "Agent",
     maximize: "Maximize the panel: hide the board", restore: "Restore the board", menuMaximize: "Open maximized",
     tabNumber: "Tab {n}", noTab: "No tab open: click a card",
@@ -263,8 +268,10 @@ const STR = {
     waitingOff: "Coluna Aguardando desligada: esses agentes aparecem como Concluídos ou Ociosos. Clique para ligar.",
     notWaiting: "Não está esperando: mostrar como Concluído ou Ocioso",
     agents: (n) => (n === 1 ? "1 agente" : `${n} agentes`),
-    scopeAllTip: "Mostrando todos os espaços. Clique para mostrar só {name}, o espaço em que você está.",
-    scopeSpaceTip: "Mostrando só {name}. Clique para mostrar todos os espaços.",
+    filterAll: "Todos", filterCurrent: "Espaço atual", filterSpaces: "Espaços", filterMachines: "Máquinas",
+    filterAllTip: "Mostrando todos os agentes. Clique para escolher um espaço ou uma máquina.",
+    filterCurrentTip: "Mostrando o espaço em que você está: {name}. Segue o espaço ativo. Clique para mudar.",
+    filterOnlyTip: "Mostrando só {name}. Clique para mudar.",
     detailOn: "Ocultar o painel da aba", detailOff: "Mostrar o painel da aba", agentLabel: "Agente",
     maximize: "Maximizar o painel: ocultar o quadro", restore: "Restaurar o quadro", menuMaximize: "Abrir maximizado",
     tabNumber: "Aba {n}", noTab: "Nenhuma aba aberta: clique num cartão",
@@ -366,12 +373,15 @@ function foldGroups(items) {
   return out;
 }
 const base = (p) =>String(p || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
+/** The name of a space as Herdr shows it; "" for none. */
+const spaceName = (p) => (p ? p.name || base(p.folder) || p.id : "");
 
 export default class Kanban extends View {
   init(given, cx) {
     // Read props once and keep them: props() in a later callback can answer for another copy.
     this.props = (given && Object.keys(given).length ? given : props()) || {};
-    const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "new-dialog", "columns-menu", "gear-menu", "buttons-menu"];
+    const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "new-dialog", "columns-menu", "filter-menu",
+      "gear-menu", "buttons-menu"];
     this.part = ["bar", "tab-head", ...overlays].includes(this.props.part) ? this.props.part : "board";
     if (this.part === "tab-head") return;
     if (overlays.includes(this.part)) {
@@ -424,6 +434,7 @@ export default class Kanban extends View {
       // "kanban.group-<id>" opens the menu of a group button (kanban.group-git). "kanban.gear" does what the
       // gear button does. "kanban.buttons" opens the editor of the bar buttons. "kanban.maximize" maximizes
       // the tab panel or restores the board. "kanban.group" steps the lanes: none -> machine -> space.
+      // "kanban.filter" steps the filter: all -> the current space -> all.
       cx.spawn(async (cx) => {
         for (;;) {
           const cmd = String(await nextCommand());
@@ -432,6 +443,7 @@ export default class Kanban extends View {
           else if (cmd === "buttons") this.openButtons();
           else if (cmd === "maximize") this.toggleMaximize();
           else if (cmd === "group") this.stepGroup();
+          else if (cmd === "filter") this.stepFilter();
           else if (cmd.startsWith("group-")) this.openGroup(cmd.slice(6));
           else if (cmd.startsWith("panel-")) this.togglePanel(cmd.slice(6));
           cx.notify();
@@ -573,28 +585,24 @@ export default class Kanban extends View {
     setShared(KEY_ORDER, order);
   }
 
-  /** "space" while the filter is on and the space it keeps still exists, else "all". */
-  scope() { return shared(KEY_SCOPE) === "space" && this.scopeSpace() ? "space" : "all"; }
-
-  /** The space the filter keeps: the one that was active when it was turned on, so a card click
-   *  that makes another space active does not hide the other cards. */
-  scopeSpace() {
-    let id = shared(KEY_SCOPE_SPACE);
-    // Older versions turned the filter on without a space: keep the one active now.
-    if (id == null && shared(KEY_SCOPE) === "space") {
-      id = spaces().find((p) => p.active)?.id ?? null;
-      if (id) setShared(KEY_SCOPE_SPACE, id);
-    }
-    return spaces().find((p) => p.id === id) ?? null;
+  /** The saved filter; the first read takes over the keys of older versions and clears them. */
+  savedFilter() {
+    const f = parseFilter(shared(KEY_FILTER));
+    if (f) return f;
+    const old = shared(OLD_SCOPE), oldSpace = shared(OLD_SCOPE_SPACE);
+    if (old == null && oldSpace == null) return { kind: "all" };
+    const next = migrateFilter(old, oldSpace);
+    setShared(KEY_FILTER, next);
+    setShared(OLD_SCOPE, null);
+    setShared(OLD_SCOPE_SPACE, null);
+    return next;
   }
 
-  toggleScope() {
-    if (this.scope() === "space") return setShared(KEY_SCOPE, "all");
-    const space = spaces().find((p) => p.active)?.id;
-    if (!space) return;
-    setShared(KEY_SCOPE_SPACE, space);
-    setShared(KEY_SCOPE, "space");
-  }
+  /** What the filter keeps now (see resolveFilter): a space or machine that is gone keeps all. */
+  activeFilter() { return resolveFilter(this.savedFilter(), spaces(), this.machineRow()); }
+
+  /** The command kanban.filter: all -> the current space -> all. */
+  stepFilter() { setShared(KEY_FILTER, { kind: this.activeFilter().kind === "all" ? "current" : "all" }); }
 
   /** How the board splits into lanes: "none", "machine" or "space". */
   grouping() {
@@ -653,11 +661,10 @@ export default class Kanban extends View {
     return typeof width === "number" && width < wide;
   }
 
-  /** Agents after the scope and the search text. */
+  /** Agents after the filter and the search text. */
   visible() {
     const q = String(shared(KEY_QUERY) ?? "").trim().toLowerCase();
-    const space = this.scope() === "space" ? this.scopeSpace().id : null;
-    const scoped = this.withWaiting(space ? agents().filter((a) => a.space === space) : agents());
+    const scoped = this.withWaiting(applyFilter(agents(), this.activeFilter(), machineOf));
     if (!q) return scoped;
     return scoped.filter((a) => {
       const pane = panes().find((p) => p.pane === a.pane);
@@ -998,6 +1005,47 @@ export default class Kanban extends View {
     return v_flex().id("kb-cols-root").w_full().p(MENU_PAD)
       .child(h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim).child(this.s("columnsTitle")))
       .children(this.columnToggles(this.props.counts).map(row));
+  }
+
+  /** The rows of the filter menu: all, the current space, the spaces, and the machines when there are more than one.
+   *  A row is { id, filter, symbol, label, note?, machine? }, a section head { head }. */
+  filterItems() {
+    const list = this.machineRow(), here = spaces();
+    return [
+      { id: "all", filter: { kind: "all" }, symbol: "board", label: this.s("filterAll") },
+      { id: "current", filter: { kind: "current" }, symbol: "locate", label: this.s("filterCurrent"), note: spaceName(here.find((p) => p.active)) },
+      ...(here.length ? [{ head: this.s("filterSpaces") }] : []),
+      ...here.map((p) => ({ id: `s-${p.id}`, filter: { kind: "space", id: p.id }, symbol: "folder", label: spaceName(p), machine: p.machine ?? null })),
+      ...(list.length > 1 ? [{ head: this.s("filterMachines") }, ...list.map((m) => ({ id: `m-${m.name ?? ""}`,
+        filter: { kind: "machine", id: m.name ?? null }, symbol: "server", label: m.name ?? this.s("thisComputer") }))] : []),
+    ];
+  }
+
+  /** Opens the filter menu at the pointer, as tall as its rows up to FILTER_MAX (then it scrolls). */
+  openFilter() {
+    const items = this.filterItems(), heads = items.filter((it) => it.head).length;
+    openOverlay({ mod: "kanban", kind: "popup", width: FILTER_W,
+      height: Math.min(FILTER_MAX, MENU_PAD * 2 + heads * MENU_HEAD + (items.length - heads) * MENU_ROW),
+      props: { part: "filter-menu", lang: this.lang } });
+  }
+
+  /** The filter menu: a tick on what the board shows now. A click saves the filter and closes the menu. */
+  filterMenu(t) {
+    const now = this.activeFilter();
+    const isOn = (f) => f.kind === now.kind && (f.kind === "space" ? f.id === now.space.id : f.kind === "machine" ? f.id === now.machine : true);
+    const head = (label) => h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim).child(label);
+    const row = (it, on) => h_flex().id(`kb-flt-${it.id}`).w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6).cursor_pointer()
+      .text_size(13).text_color(on ? t.accent : t.foreground)
+      .when(on, (e) => e.bg(tint(t.accent, "1a")))
+      .hover((s) => s.bg(on ? tint(t.accent, "33") : t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); setShared(KEY_FILTER, it.filter); if (this.overlay) closeOverlay(this.overlay); })
+      .child(svg(icon(it.symbol)).size(15).flex_none().text_color(on ? t.accent : t.muted))
+      .child(div().flex_1().min_w(0).truncate().child(it.label))
+      .when(Boolean(it.note), (e) => e.child(div().flex_none().max_w(110).truncate().text_size(11).text_color(t.dim).child(it.note)))
+      .when(Boolean(it.machine), (e) => e.child(machineChip(t, `kb-flt-chip-${it.id}`, it.machine)))
+      .child(div().w(13).flex_none().when(on, (e) => e.child(svg(icon("tick")).size(13).text_color(t.accent))));
+    return v_flex().id("kb-flt-root").size_full().min_h(0).p(MENU_PAD).overflow_y_scrollbar()
+      .children(this.filterItems().map((it) => (it.head ? head(it.head) : row(it, isOn(it.filter)))));
   }
 
   /** The gear button opens a menu: the look of the board, the columns, Herdr's settings, the editor of the bar
@@ -1367,7 +1415,7 @@ export default class Kanban extends View {
     // One machine (the usual case): its name, not a list of one.
     const machine = list.length > 1
       ? h_flex().flex_1().min_w(0).items_center().overflow_x_scrollbar().child(segmented(t, list.map((m) => ({
-        id: `kb-nw-m-${m.name ?? "here"}`, label: m.name ?? this.s("thisComputer"), symbol: m.name ? "server" : undefined,
+        id: `kb-nw-m-${m.name ?? ""}`, label: m.name ?? this.s("thisComputer"), symbol: m.name ? "server" : undefined,
         active: (m.name ?? null) === this.machine, onClick: (cx) => this.pickMachine(m.name ?? null, cx) }))))
       : this.machine
         ? h_flex().flex_1().min_w(0).items_center().child(machineChip(t, "kb-nw-m-chip", this.machine))
@@ -1720,7 +1768,8 @@ export default class Kanban extends View {
   board(t) {
     const hidden = this.hidden();
     const all = agents();
-    const searching = String(shared(KEY_QUERY) ?? "").trim().length > 0;
+    // A search or a filter: an empty column says "No match".
+    const searching = String(shared(KEY_QUERY) ?? "").trim().length > 0 || this.activeFilter().kind !== "all";
     if (!all.length) {
       return this.emptyState(t, this.s("none"), this.s("noneHint"),
         button(t, "kb-new", this.s("newAgent"), () => this.openNew(), { primary: true, symbol: "plus" }));
@@ -1877,12 +1926,13 @@ export default class Kanban extends View {
     }, this.s(detail ? "detailOff" : "detailOn"), iconOnly);
   }
 
-  /** The funnel: only the cards of one space. */
-  scopeButton(t) {
-    const on = this.scope() === "space", space = on ? this.scopeSpace() : spaces().find((p) => p.active);
-    const name = space?.name || base(space?.folder) || "";
-    return iconButton(t, "kb-scope", "filter", () => this.toggleScope(),
-      { active: on, size: 32, tooltip: this.s(on ? "scopeSpaceTip" : "scopeAllTip", { name }) });
+  /** The filter: a funnel with what the board shows (only the funnel in compact), lit while it limits the cards. */
+  filterButton(t, iconOnly) {
+    const r = this.activeFilter();
+    const name = r.space ? spaceName(r.space) : r.kind === "machine" ? r.machine ?? this.s("thisComputer") : "";
+    const label = r.kind === "all" || r.kind === "current" ? this.s(r.kind === "all" ? "filterAll" : "filterCurrent") : name.length > 24 ? `${name.slice(0, 23)}…` : name;
+    const tip = r.kind === "all" ? this.s("filterAllTip") : this.s(r.kind === "current" ? "filterCurrentTip" : "filterOnlyTip", { name });
+    return buttonGroup(t, [panelButton(t, "kb-filter", icon("filter"), label, r.kind !== "all", () => this.openFilter(), tip, iconOnly, true)]);
   }
 
   /** None / machine / space: how the board splits into lanes. Icons only, the tooltips name them. */
@@ -1950,7 +2000,7 @@ export default class Kanban extends View {
     const win = w?.platform === "windows";
     const compact = this.compact(this.barW, BAR_WIDE);
 
-    // The bar reads left to right: what to show (search, scope, the lanes, the tab panel) | Settings (the gear menu has the
+    // The bar reads left to right: what to show (search, filter, the lanes, the tab panel) | Settings (the gear menu has the
     // look of the board and the columns) | New agent | the panel group (Files, Changes, dock entries) and the
     // window buttons. The panel buttons: names in Normal density, icons in Compact; in Auto, names from LABELS_WIDE px.
     const d = this.density();
@@ -1970,7 +2020,7 @@ export default class Kanban extends View {
         width: compact ? 150 : 220,
         onClear: () => { this.query.set_value(""); setShared(KEY_QUERY, ""); },
       }))
-      .child(this.scopeButton(t));
+      .child(this.filterButton(t, compact));
     // The search, the filter, the lanes and the Agent button share one row that scrolls sideways when the bar is too narrow
     // (Normal density on a small monitor). New agent and the right end stay outside it, so they always show.
     const scroller = (children) => h_flex().id("kb-strip").flex_1().min_w(0).gap(compact ? 6 : 10).items_center().overflow_x_scrollbar().children(children);
@@ -2001,6 +2051,7 @@ export default class Kanban extends View {
     if (this.part === "card-rename") return this.renameBox(t);
     if (this.part === "new-dialog") return this.newDialog(t);
     if (this.part === "columns-menu") return this.columnsMenu(t);
+    if (this.part === "filter-menu") return this.filterMenu(t);
     if (this.part === "gear-menu") return this.gearMenu(t);
     if (this.part === "buttons-menu") return this.buttonsMenu(t);
     if (this.part === "tab-head") return this.tabHead(t);
