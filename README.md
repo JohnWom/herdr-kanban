@@ -91,7 +91,7 @@ Switch to the layout with `ctrl-shift-l`. Your own layout stays as it was.
 | `layouts/kanban.svg` | The picture for the settings screen. |
 | `mods/kanban/` | One mod with three parts, chosen by `props.part`: `bar`, `board` and `tab-head` (the head of the tab panel). They share state through `shared()`. `waiting.js` finds the agents that wait for subagents, `lanes.js` sorts them into lanes. |
 
-Language: the mod shows English. Add `"lang": "pt"` to the `props` of both
+Language: the mod shows English. Add `"lang": "pt"` to the `props` of all three
 `kanban` blocks in the layout for Portuguese. With the `mods-hub` mod, the
 **Language** setting of its **Kit** section (`shared("herdr-mods.lang")`) wins
 over the prop, in every bar of the kit, and changes the bar at once. The text
@@ -124,8 +124,8 @@ bar reads the same value, so both bars show the same order. A new entry of
 - With the Waiting column on, it reads (never writes) files in your Claude Code folders under your home folder: `sessions/*.json` (with the `status` field: `"shell"` while a background command runs) and the transcript `projects/*/<session>.jsonl` of the Claude agents that show as Done or Idle. It runs `hc get <terminal> --json` for them. It reads a transcript again only when the agent changes turn, and every 30 seconds for an agent known to wait. Nothing leaves your computer.
 - At start it runs `hc get kanban-shell --json`; when that terminal of an older version (label `kanban.shell=1`) has ended, `hc rm` removes it; while it still runs, it stays and the log says to end it with `hc kill kanban-shell`.
 - When you duplicate an agent, it runs `hc get <terminal> --json` to read its labels, and opens Herdr's `worktree` dialog for a new worktree.
-- Besides the reads above, it runs Herdr commands only: `agent.focus`, `terminal.pin`, `tab.select`, `tab.rename`, `tab.close`, `space.select`, `pane.focus`, `pane.zoom`, `layout.select`, `layout.show`, `layout.hide`, `layout.toggle`, `layout.resize`, `layout.set`, `tab.new`, `space.new`, `window.*`, and the `run` of a command entry of `panels.json`.
-- It runs no program other than `hc`, and uses no network.
+- Besides the reads above, it runs Herdr commands only: `agent.focus`, `terminal.pin`, `tab.select`, `tab.rename`, `tab.close`, `space.select`, `pane.focus`, `pane.zoom`, `layout.select`, `layout.show`, `layout.hide`, `layout.toggle`, `layout.resize`, `layout.set`, `tab.new`, `space.new`, `window.*`, `app.settings`, `mod.open`, and the `run` of a command entry of `panels.json`.
+- It runs no program other than `hc`, except for a remote agent: there the Waiting column reads the transcript with `sh` (or PowerShell) on that machine through Herdr. It uses no network of its own.
 
 ## Limits
 
