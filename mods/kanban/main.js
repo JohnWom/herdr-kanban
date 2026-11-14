@@ -2023,7 +2023,7 @@ export default class Kanban extends View {
         .when(!shut, (e) => e.child(row().children(places.map((p) => place(p, (c) => {
           const list = inColumn(g.agents, c.id);
           return this.frame(this.cardStack(v_flex().py(compact ? 7 : 10), list, t, compact, summary), c, t, compact, c.id === "blocked" && list.length > 0);
-        })).when(more.length > 0, (r) => r.pr(gap + MORE_W)))));
+        }))).when(more.length > 0, (r) => r.pr(gap + MORE_W))));
     };
     return v_flex().id("kb-board").size_full().min_h(0).gap(gap)
       .when(fixed, (e) => e.overflow_x_scrollbar())
