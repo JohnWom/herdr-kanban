@@ -1809,9 +1809,9 @@ export default class Kanban extends View {
     return svg(icon("moon")).size(14).flex_none().text_color(t.dim);
   }
 
-  /** A card of 2 lines: the program icon, the space and the status mark, then the title, with no
-   *  age so the title has room. The icon tells the program, so the space names the card. While the
-   *  pointer is on the card, its buttons show at the end of the title line. */
+  /** A card of 2 lines: the program icon, the title (the tab name, else the agent's title; up to 2 lines that
+   *  shrink to fit) and the status mark, then the space, with no age so the title has room. The icon tells the
+   *  program. While the pointer is on the card, its buttons show at the end of the second line. */
   summaryCard(a, t, compact = false) {
     const color = statusColor(t, a.status);
     const pane = panes().find((p) => p.pane === a.pane);

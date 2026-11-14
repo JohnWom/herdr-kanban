@@ -174,4 +174,4 @@ bar reads the same value, so both bars show the same order. A new entry of
 - The age on a card is the age of its **tab** (`changed_at` or `working_since`). A tab with 2 agents shows the same age on both.
 - The Waiting column depends on how Claude Code writes its transcript (tested with Claude Code 2.1.318): a tool result "Async agent launched … agentId" and `<task-notification>` records. If a new version changes that, the column stays empty and the agents show as Done or Idle, as before. Background shell commands are counted too: a tool result "Command running in background with ID", or the status `"shell"` in `sessions/<pid>.json`. Other agents (Codex, …) are not checked.
 - Upstream was built and tested on Windows with Herdr 0.1.12. This fork runs on macOS with Herdr 0.1.15 (herdr-core 0.1.21), with agents on this computer and on a remote machine (a dev container over ssh). Untested: Linux.
-- `RECIPE.md` is the upstream brief to build it from scratch. It does not describe this fork's cards or agent trees yet.
+- `RECIPE.md` has the full brief to build it from scratch, this fork's cards and agent trees included.
