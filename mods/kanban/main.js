@@ -3,7 +3,9 @@
 //   "bar"   the top bar: search, filter, grouping, New agent, gear, panel buttons, window buttons.
 //   "board" the columns with the cards (the agents, and the tabs with no agent in Terminals); grouped, one swimlane
 //           per machine or space under the column heads.
-//   "tab-head" the head of the tab panel: the tab, its space and machine, the maximize button.
+//   "tab-head" the head of the tab panel: the tab (or, in a tree of agents, the path to it), its space and
+//              machine, the tree button, the maximize button.
+//   "tree-menu" the agent tree of the shown agent, a popup (the tree button of the head opens it).
 //   "panel-title" the title row of a panel dialog (the bar opens it, see openDialog).
 //   "group-menu" the menu of a group button of the panel group, a popup (the bar opens it, see openGroup).
 //   "clone-menu" the menu of the duplicate button of a card, a popup (the board opens it, see openClone).
@@ -33,6 +35,7 @@ import { parseFilter, migrateFilter, resolveFilter, applyFilter } from "./filter
 import { pairsOf, stacks, barLook } from "./density.js";
 import { TERMINALS, terminalTabs } from "./terminals.js";
 import { PLACES, axis, placeOf, movePanel } from "./place.js";
+import { forest, pathTo, flatten, step as treeStep } from "./tree.js";
 
 /** The icon of an entry of knownAgents: a one-color glyph is tinted, anything else is a picture. */
 const agentGlyph = (a, t) => (!a.icon ? svg(icon("bot")).size(15).flex_none().text_color(t.muted)
@@ -143,6 +146,7 @@ const MENU_W = 220, MENU_PAD = 5, MENU_HEAD = 26, MENU_ROW = 32; // px: the menu
 const FILTER_W = 260, FILTER_MAX = 440; // px: the filter menu (its width, the tallest it gets before it scrolls)
 const CLONE_W = 270; // px: the menu of the duplicate button of a card
 const CARD_MENU_W = 250; // px: the right-click menu of a card
+const TREE_W = 300, TREE_ROWS = 12, TREE_INDENT = 16; // px, rows: the tree menu (it scrolls past TREE_ROWS)
 const RENAME_W = 300, RENAME_ROW = 40; // px: the rename popup (its width and its field row)
 // px: the New session dialog (its size, a row of a list, a field row, the head and the foot). Its two lists
 // share the height that is left, so the size does not follow the number of spaces or agents.
@@ -235,6 +239,9 @@ const STR = {
     placeTip: "Where the tab panel shows", place_off: "Off", place_right: "Right", place_left: "Left", place_bottom: "Bottom",
     maximize: "Maximize the panel: hide the board", restore: "Restore the board", menuMaximize: "Open maximized",
     tabNumber: "Tab {n}", noTab: "No tab open: click a card",
+    treeTitle: "Agent tree", treeTip: (v) => `Agent tree: ${v.n} agents`, treeKids: (n) => `${n} ${n === 1 ? "child" : "children"}`,
+    treePeek: "No pane: opens a peek", treeHere: "Shown now", treeBetween: "Between the top and here",
+    treeBetweenTip: (n) => `${n} ${n === 1 ? "agent" : "agents"} in between`,
     newAgent: "New agent", hide: "Hide this column", showCol: "Show {name}", hideCol: "Hide {name}",
     emptyCol: "No agents here", emptyTerminals: "No tab without an agent", emptyColSearch: "No match",
     allHidden: "All columns are hidden", allHiddenHint: "Click a column above to show its cards.", showAll: "Show all columns",
@@ -298,6 +305,9 @@ const STR = {
     placeTip: "Onde o painel da aba aparece", place_off: "Desligado", place_right: "Direita", place_left: "Esquerda", place_bottom: "Embaixo",
     maximize: "Maximizar o painel: ocultar o quadro", restore: "Restaurar o quadro", menuMaximize: "Abrir maximizado",
     tabNumber: "Aba {n}", noTab: "Nenhuma aba aberta: clique num cartão",
+    treeTitle: "Árvore de agentes", treeTip: (v) => `Árvore de agentes: ${v.n} agentes`, treeKids: (n) => `${n} ${n === 1 ? "filho" : "filhos"}`,
+    treePeek: "Sem painel: abre uma espiada", treeHere: "Mostrado agora", treeBetween: "Entre o topo e aqui",
+    treeBetweenTip: (n) => `${n} ${n === 1 ? "agente" : "agentes"} no meio`,
     newAgent: "Novo agente", hide: "Ocultar esta coluna", showCol: "Mostrar {name}", hideCol: "Ocultar {name}",
     emptyCol: "Nenhum agente aqui", emptyTerminals: "Nenhuma aba sem agente", emptyColSearch: "Nada encontrado",
     allHidden: "Todas as colunas estão ocultas", allHiddenHint: "Clique numa coluna acima para mostrar os cartões dela.", showAll: "Mostrar todas as colunas",
@@ -443,7 +453,7 @@ export default class Kanban extends View {
     // Read props once and keep them: props() in a later callback can answer for another copy.
     this.props = (given && Object.keys(given).length ? given : props()) || {};
     const overlays = ["panel-title", "group-menu", "clone-menu", "card-menu", "card-rename", "new-dialog", "columns-menu", "filter-menu",
-      "place-menu", "gear-menu", "buttons-menu"];
+      "place-menu", "gear-menu", "buttons-menu", "tree-menu"];
     this.part = ["bar", "tab-head", ...overlays].includes(this.props.part) ? this.props.part : "board";
     if (this.part === "tab-head") return;
     if (overlays.includes(this.part)) {
@@ -514,6 +524,8 @@ export default class Kanban extends View {
           else if (cmd === "place-off") this.setPlace("off");
           else if (cmd === "next") this.stepCard(1);
           else if (cmd === "prev") this.stepCard(-1);
+          else if (cmd === "tree") this.openTree();
+          else if (cmd.startsWith("tree-")) this.stepTree(cmd.slice(5));
           else if (cmd.startsWith("group-")) this.openGroup(cmd.slice(6));
           else if (cmd.startsWith("panel-")) this.togglePanel(cmd.slice(6));
           cx.notify();
@@ -2255,6 +2267,146 @@ export default class Kanban extends View {
       tooltip: this.s(`group_${g}`), onClick: () => setShared(KEY_GROUP, g) })));
   }
 
+  // ---- the agent tree ------------------------------------------------------
+
+  /** The agent the panel shows for tab `id`: the focused terminal when it is in that tab, else the agent an
+   *  agent block shows when it is there, else the first agent of the tab. */
+  headAgent(id) {
+    const fo = focused();
+    const inTab = (address) => address && panes().some((p) => p.terminal === address && p.tab === id);
+    if (inTab(fo?.terminal)) return fo.terminal;
+    if (inTab(fo?.agent)) return fo.agent;
+    return agents().find((a) => a.tab === id)?.address ?? null;
+  }
+
+  /** A tree node's name: the terminal's own name (hc run --name), else the name of its tab when a person named it,
+   *  else its agent's title, else its program. */
+  treeLabel(term) {
+    if (!term) return "";
+    if (term.name) return String(term.name);
+    const a = agents().find((x) => x.address === term.address);
+    const prog = a?.program?.name || term.program?.name || term.agent || "";
+    if (a) {
+      const { text } = this.cardTitle(a, prog);
+      if (text) return text;
+    }
+    return prog || String(term.address);
+  }
+
+  /** Shows terminal `address`: its tab and pane when it has one, else a peek over the tab. */
+  goTo(address) {
+    const pane = panes().find((p) => p.terminal === address);
+    if (!pane) return this.guard(() => run("terminal.peek", { terminal: address }));
+    const space = spaces().find((sp) => (sp.tabs ?? []).some((x) => x.id === pane.tab));
+    const agent = agents().some((a) => a.address === address);
+    this.guard(() => Promise.all([space ? run("space.select", { id: space.id }) : null, run("tab.select", { id: pane.tab }),
+      run("pane.focus", { terminal: address }), agent ? run("agent.focus", { terminal: address }) : null]));
+  }
+
+  /** kanban.tree-up / -down / -next / -prev: moves from the shown agent in its tree. */
+  stepTree(dir) {
+    const id = shownTab().id, here = id ? this.headAgent(id) : null;
+    if (!here) return;
+    const to = treeStep(forest(terminals()), here, dir);
+    if (to) this.goTo(to);
+  }
+
+  /** A status dot of 7 px. */
+  treeDot(t, status) {
+    return div().size(7).rounded(4).flex_none().bg(statusColor(t, status || "idle"));
+  }
+
+  /** The path from the root to the shown agent, always short: the root as a link, then "…" (a button: the agents in
+   *  between, see openBetween) when there are any, then the shown agent in bold; "›" between them. */
+  crumbs(t, f, path) {
+    const sep = () => div().flex_none().text_size(12).text_color(t.dim).child("›");
+    const link = (address) => {
+      const term = f.byAddr.get(address), label = this.treeLabel(term);
+      return h_flex().id(`kb-crumb-${address}`).flex_shrink(1).min_w(0).max_w(150).h(24).px(6).gap(5).items_center().rounded(6)
+        .cursor_pointer().hover((st) => st.bg(t.hover)).tooltip(label)
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); this.goTo(address); })
+        .child(this.treeDot(t, term?.status))
+        .child(div().min_w(0).truncate().text_size(12).text_color(t.muted).child(label));
+    };
+    const between = path.slice(1, -1);
+    const more = h_flex().id("kb-crumb-more").flex_none().h(24).px(7).items_center().rounded(6).cursor_pointer()
+      .text_size(13).font_semibold().text_color(t.muted).hover((st) => st.bg(t.hover).text_color(t.foreground))
+      .tooltip(this.s("treeBetweenTip", between.length))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openBetween(path); })
+      .child("…");
+    const out = path.length > 1 ? [link(path[0]), sep()] : [];
+    if (between.length) out.push(more, sep());
+    const last = f.byAddr.get(path[path.length - 1]);
+    out.push(h_flex().flex_shrink(1).min_w(0).max_w(260).gap(6).items_center()
+      .child(this.treeDot(t, last?.status))
+      .child(div().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground).child(this.treeLabel(last))));
+    return out;
+  }
+
+  /** The tree button: a branch icon and the number of children of the shown agent; a click opens the tree menu. */
+  treeButton(t, f, root, here) {
+    const n = flatten(f, root).length, kids = f.kids.get(here)?.length ?? 0;
+    return h_flex().id("kb-tree").flex_none().h(24).px(7).gap(5).items_center().rounded(7).cursor_pointer()
+      .border_1().border_color(t.border).text_size(11).text_color(t.muted)
+      .hover((st) => st.bg(t.hover).text_color(t.foreground))
+      .tooltip(`${this.s("treeTip", { n })}${kids ? ` · ${this.s("treeKids", kids)}` : ""}`)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openTree(); })
+      .child(svg(icon("branch")).size(12).flex_none())
+      .when(kids > 0, (e) => e.child(String(kids)))
+      .child(svg(icon("chevron-down")).size(10).flex_none());
+  }
+
+  /** Opens the agents between the root and the shown agent (`path`), top first, as a menu at the pointer. */
+  openBetween(path) {
+    const between = path.slice(1, -1);
+    if (!between.length) return;
+    const rows = Math.min(TREE_ROWS, between.length);
+    openOverlay({ mod: "kanban", kind: "popup", width: TREE_W, height: MENU_PAD * 2 + MENU_HEAD + rows * MENU_ROW,
+      props: { part: "tree-menu", lang: this.lang, root: path[0], here: path[path.length - 1], only: between } });
+  }
+
+  /** Opens the tree menu of the shown agent at the pointer. */
+  openTree() {
+    const id = shownTab().id, here = id ? this.headAgent(id) : null;
+    if (!here) return;
+    const f = forest(terminals()), root = pathTo(f, here)[0];
+    const rows = Math.min(TREE_ROWS, flatten(f, root).length);
+    openOverlay({ mod: "kanban", kind: "popup", width: TREE_W, height: MENU_PAD * 2 + MENU_HEAD + rows * MENU_ROW,
+      props: { part: "tree-menu", lang: this.lang, root, here } });
+  }
+
+  /** The tree menu: the whole tree of the shown agent, indented by depth, live (status dots, names). The shown
+   *  agent is lit; one with no pane says so (a click peeks at it). A click goes there and closes the menu. */
+  treeMenu(t) {
+    const f = forest(terminals()), { root, here, only } = this.props;
+    // `only`: just these agents (the ones between the root and the shown agent), indented by their depth.
+    const rows = Array.isArray(only) ? only.filter((a) => f.byAddr.has(a)).map((address, i) => ({ address, depth: i + 1 }))
+      : flatten(f, root);
+    const row = ({ address, depth }) => {
+      const term = f.byAddr.get(address), on = address === here;
+      const pane = panes().some((p) => p.terminal === address);
+      return h_flex().id(`kb-tree-${address}`).w_full().h(MENU_ROW).pr(10).pl(10 + depth * TREE_INDENT).gap(8).flex_none().items_center()
+        .rounded(6).cursor_pointer().text_size(13).text_color(on ? t.accent : t.foreground)
+        .when(on, (e) => e.bg(tint(t.accent, "1a")).tooltip(this.s("treeHere")))
+        .when(!pane, (e) => e.tooltip(this.s("treePeek")))
+        .hover((st) => st.bg(on ? tint(t.accent, "33") : t.hover))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.goTo(address); if (this.overlay) closeOverlay(this.overlay); })
+        .when(depth > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.dim).child("└")))
+        .child(this.treeDot(t, term?.status))
+        .child(div().flex_1().min_w(0).truncate().child(this.treeLabel(term)))
+        .when(!pane, (e) => e.child(svg(icon("eye")).size(12).flex_none().text_color(t.dim)))
+        .when(on, (e) => e.child(svg(icon("tick")).size(13).flex_none().text_color(t.accent)));
+    };
+    // A popup does not give its content a height to share: the rows get a fixed one and scroll past TREE_ROWS.
+    return v_flex().id("kb-tree-root").w_full().p(MENU_PAD)
+      .child(h_flex().w_full().h(MENU_HEAD).px(10).flex_none().items_center().text_size(11).font_semibold().text_color(t.dim).child(this.s(Array.isArray(only) ? "treeBetween" : "treeTitle")))
+      .child(v_flex().id("kb-tree-rows").w_full().flex_none().h(Math.min(TREE_ROWS, rows.length) * MENU_ROW).overflow_y_scrollbar()
+        .children(rows.map(row)));
+  }
+
   /** The head of the tab panel: the tab name, its space and its machine, and the maximize button. */
   tabHead(t) {
     const { space, tab, id } = shownTab();
@@ -2270,8 +2422,13 @@ export default class Kanban extends View {
     const place = (space.tabs ?? []).findIndex((x) => x.id === id) + 1;
     const name = this.tabLabel(raw, place || raw || id);
     const dot = () => div().flex_none().text_size(12).text_color(t.dim).child("·");
+    // In a tree of agents the head shows the path to the shown agent and a tree button; else the tab name.
+    const f = forest(terminals()), here = this.headAgent(id);
+    const path = here ? pathTo(f, here) : [];
+    const inTree = path.length > 1 || (here && (f.kids.get(here)?.length ?? 0) > 0);
     return row
-      .child(div().flex_shrink(1).min_w(0).max_w(260).truncate().text_size(13).font_semibold().text_color(t.foreground).child(name))
+      .when(!inTree, (e) => e.child(div().flex_shrink(1).min_w(0).max_w(260).truncate().text_size(13).font_semibold().text_color(t.foreground).child(name)))
+      .when(inTree, (e) => e.children(this.crumbs(t, f, path)).child(this.treeButton(t, f, path[0], here)))
       .child(dot())
       .child(div().flex_shrink(1).min_w(0).truncate().text_size(12).text_color(t.muted).child(space.name || base(space.folder) || space.id))
       .child(dot())
@@ -2365,6 +2522,7 @@ export default class Kanban extends View {
     if (this.part === "place-menu") return this.placeMenu(t);
     if (this.part === "gear-menu") return this.gearMenu(t);
     if (this.part === "buttons-menu") return this.buttonsMenu(t);
+    if (this.part === "tree-menu") return this.treeMenu(t);
     if (this.part === "tab-head") return this.tabHead(t);
     this.syncWaiting(cx);
     if (this.part === "bar") return this.bar(t);
