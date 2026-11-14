@@ -401,7 +401,42 @@ function foldGroups(items) {
 }
 const base = (p) =>String(p || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
 /** The name of a space as Herdr shows it; "" for none. */
+const MARK_W = 16; // px: the status mark at the end of a card's first row
+/** About how wide machineChip() draws `name` (an icon, the name at 10.5 px, its padding). */
+const machineChipW = (name) => Math.min(160, 31 + String(name).length * 6.5);
 const spaceName = (p) => (p ? p.name || base(p.folder) || p.id : "");
+
+/** The lines `s` takes at `cpl` characters a line, wrapping at spaces; a word longer than a line breaks. */
+function linesOf(s, cpl) {
+  let n = 1, used = 0;
+  for (const word of s.split(/\s+/).filter(Boolean)) {
+    const w = word.length;
+    if (used && used + 1 + w <= cpl) { used += 1 + w; continue; }
+    if (used) { n++; used = 0; }
+    n += Math.ceil(w / cpl) - 1;
+    used = w % cpl || cpl;
+  }
+  return n;
+}
+
+/** Fits `text` into `lines` lines of `width` px: the largest size from `max` down to `min` (0.5 px
+ *  steps) at which it wraps into that many lines, else `min` with the text cut (at a word when one
+ *  ends near) and "…". GPUI can neither measure text nor clamp lines from a script, so the width of a
+ *  character is an estimate (Geist, on the safe side). `width` null: `max`, text as is. */
+function fitText(text, width, { max, min, lines = 1, bold = false }) {
+  const s = String(text ?? "").trim();
+  if (!s || typeof width !== "number" || width <= 0) return { size: max, text: s };
+  const cplAt = (size) => Math.max(1, Math.floor(width / (size * (bold ? 0.6 : 0.55))));
+  for (let size = max; size >= min; size -= 0.5) {
+    if (linesOf(s, cplAt(size)) <= lines) return { size, text: s };
+  }
+  const cpl = cplAt(min);
+  let cut = s.slice(0, Math.max(1, cpl * lines - 1));
+  while (cut.length > 1 && linesOf(`${cut}…`, cpl) > lines) cut = cut.slice(0, -1);
+  const space = cut.lastIndexOf(" ");
+  if (space > cut.length * 0.6) cut = cut.slice(0, space);
+  return { size: min, text: `${cut.trimEnd()}…` };
+}
 
 export default class Kanban extends View {
   init(given, cx) {
@@ -1765,21 +1800,28 @@ export default class Kanban extends View {
   /** A card of 2 lines: the program icon, the space and the status mark, then the title, with no
    *  age so the title has room. The icon tells the program, so the space names the card. While the
    *  pointer is on the card, its buttons show at the end of the title line. */
-  summaryCard(a, t) {
+  summaryCard(a, t, compact = false) {
     const color = statusColor(t, a.status);
     const pane = panes().find((p) => p.pane === a.pane);
     const selected = a.tab === this.shown;
     const hot = a.status === "blocked";
     const name = a.program?.name || a.app || "Agent";
     const { text: title } = this.cardTitle(a, name);
-    const head = a.space_name || name;
-    // A waiting agent says what it waits for, in place of its title.
+    // The tab (or the agent's title) names the card; the space goes under it.
+    const hasTitle = Boolean(title) && title !== name;
+    const head = hasTitle ? title : a.space_name || name;
+    // A waiting agent says what it waits for, in place of its space.
     const line = a.wait ? this.waitText(a)
-      : title && title !== name ? title : [name, pane?.branch].filter(Boolean).join(" · ");
+      : hasTitle && a.space_name ? a.space_name : [name, pane?.branch].filter(Boolean).join(" · ");
     const over = this.hoverCard === a.address;
     const machine = machineOf(a);
     const small = (id, symbol, action, tooltip, active = false) => iconButton(t, `${id}-${a.address}`, symbol, action,
       { active, tooltip, size: 20, glyph: 11, color: active ? t.accent : t.dim });
+    // Line 1 has the 20 px icon, the machine chip, the pin and the mark beside the head; line 2 is the whole width.
+    const inner = this.cardInner(compact, 9);
+    const beside = 20 + 7 + (machine ? machineChipW(machine) + 7 : 0) + (a.pinned ? 11 + 7 : 0) + MARK_W + 7;
+    const fitHead = fitText(head, inner === null ? null : inner - beside, { max: 13, min: 11, lines: 2, bold: true });
+    const fitLine = fitText(line, inner, { max: 11, min: 10, lines: 1 });
 
     return v_flex().id(`card-${a.address}`).w_full().flex_none().px(9).py(7).gap(4).rounded(9).cursor_pointer()
       .bg(selected ? t.raised : t.background)
@@ -1794,17 +1836,25 @@ export default class Kanban extends View {
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openCardMenu(a); })
       .child(h_flex().gap(7).items_center()
         .child(this.glyph(a, t, true).size(20).rounded(6))
-        .child(div().flex_1().min_w(0).truncate().text_size(13).font_bold().text_color(t.foreground).child(head))
+        .child(div().flex_1().min_w(0).text_size(fitHead.size).font_bold().text_color(t.foreground)
+          .when(fitHead.text !== head, (e) => e.id(`head-${a.address}`).tooltip(head)).child(fitHead.text))
         .when(Boolean(machine), (e) => e.child(machineChip(t, `machine-${a.address}`, machine, { height: 18, text: 10.5 })))
         .when(a.pinned && !over, (e) => e.child(svg(icon("pin")).size(11).flex_none().text_color(t.accent)))
         .child(this.mark(a, t)))
       .child(h_flex().h(20).gap(4).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(line))
+        .child(div().flex_1().min_w(0).truncate().text_size(fitLine.size).text_color(t.muted).child(fitLine.text))
         .when(over, (e) => e
           .when(Boolean(a.wait), (e) => e.child(small("notwait", "check", () => this.dismissWaiting(a), this.s("notWaiting"))))
           .when(this.namer && !offMods().has("tab-namer"), (e) => e.child(small("rename", "pencil", () => this.openNamer(a), this.s("rename"))))
           .child(small("clone", "copy", () => this.openClone(a), this.s("duplicate")))
           .child(small("pin", "pin", () => this.togglePin(a), this.s(a.pinned ? "unpin" : "pin"), a.pinned))));
+  }
+
+  /** The width (px) inside a card of padding `pad` in a place of the board (this.placeW), or null before
+   *  the board knows its width: the column border, the side padding of the cards, the card border. */
+  cardInner(compact, pad) {
+    if (typeof this.placeW !== "number") return null;
+    return this.placeW - 2 - 2 * (compact ? 7 : 10) - 2 - 2 * pad;
   }
 
   /** The title of a card: the name of its tab when a person named the tab (not a number, not the
@@ -1842,7 +1892,14 @@ export default class Kanban extends View {
     const name = a.program?.name || a.app || "Agent";
     // A tab that a person named gives the card its title (the agent's own title goes to the tooltip).
     const { text: title, named, agentTitle } = this.cardTitle(a, name);
+    const hasTitle = Boolean(title) && title !== name;
+    const head = hasTitle ? title : a.space_name || name;
     const branch = pane?.branch || null;
+    // The head shares its row with the program tile and the mark; the space line is the whole width.
+    const inner = this.cardInner(compact, compact ? 9 : 12);
+    const fitHead = fitText(head, inner === null ? null : inner - (compact ? 24 : 28) - 2 * (compact ? 7 : 9) - MARK_W,
+      { max: compact ? 14 : 15, min: 11, lines: 3, bold: true });
+    const fitSpace = fitText(a.space_name, inner, { max: 12, min: 10.5, lines: 2 });
     const folder = base(pane?.cwd);
     const machine = machineOf(a);
 
@@ -1857,16 +1914,17 @@ export default class Kanban extends View {
         div().h(2).w_full().rounded(1).bg(color).loop("opacity", { from: 0.2, to: 1, period: 1400 })))
       .child(h_flex().gap(compact ? 7 : 9).items_center()
         .child(this.glyph(a, t, compact))
-        // The space names the card: most agents run the same program, and the icon tells it anyway.
+        // The tab names the card (people name tabs after their work; many cards share a space). Without
+        // a title, the space does. Up to 2 lines: an agent's own title can be long.
         .child(v_flex().flex_1().min_w(0)
-          .child(div().truncate().text_size(compact ? 14 : 15).font_bold().text_color(t.foreground).child(a.space_name || name))
-          .when(Boolean(a.space_name), (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(name))))
+          .child(div().id(`title-${a.address}`).text_size(fitHead.size).font_bold().text_color(t.foreground)
+            .when(fitHead.text !== head, (el) => el.tooltip(head))
+            .when(fitHead.text === head && named && Boolean(agentTitle) && agentTitle !== title, (el) => el.tooltip(agentTitle))
+            .child(fitHead.text))
+          .when(head !== name, (e) => e.child(div().truncate().text_size(11).text_color(t.dim).child(name))))
         .child(this.mark(a, t)))
-      .when(Boolean(title) && title !== name, (e) => e.child(
-        div().id(`title-${a.address}`).max_h(34).overflow_hidden().text_size(12)
-          .text_color(named ? t.foreground : t.muted)
-          .when(named && Boolean(agentTitle) && agentTitle !== title, (el) => el.tooltip(agentTitle))
-          .child(title)))
+      .when(hasTitle && Boolean(a.space_name), (e) => e.child(
+        div().text_size(fitSpace.size).text_color(t.muted).child(fitSpace.text)))
       .child(h_flex().flex_wrap().gap(5).items_center()
         .when(Boolean(machine), (e) => e.child(machineChip(t, `machine-${a.address}`, machine)))
         .when(Boolean(a.wait), (e) => e.child(pill(t, { label: this.waitText(a), symbol: "hourglass", color })))
@@ -1984,7 +2042,7 @@ export default class Kanban extends View {
   /** The cards of `list` in `el`, with the padding and the gap of a compact or normal board. */
   cardStack(el, list, t, compact, summary) {
     return el.px(compact ? 7 : 10).gap(summary ? 6 : compact ? 7 : 10)
-      .children(list.map((a) => (a.term ? this.terminalCard(a, t, compact, summary) : summary ? this.summaryCard(a, t) : this.card(a, t, compact))));
+      .children(list.map((a) => (a.term ? this.terminalCard(a, t, compact, summary) : summary ? this.summaryCard(a, t, compact) : this.card(a, t, compact))));
   }
 
   /** One status column. `compact`: smaller header and cards. `fixed`: see sized().
@@ -2047,6 +2105,12 @@ export default class Kanban extends View {
     const min = compact ? MIN_COLUMN_COMPACT : MIN_COLUMN, gap = compact ? GAP_COMPACT : GAP;
     const width = slotsWidth(slots, min, STUB_W, gap);
     const fixed = typeof this.boardW === "number" && this.boardW < width;
+    // The width of one place, as sized() gives it: the cards fit their text to it (see fitText).
+    const placeCount = slots.filter((s) => s.place).length;
+    const free = typeof this.boardW === "number"
+      ? (this.boardW - (slots.length - placeCount) * STUB_W - (slots.length - 1) * gap) / Math.max(1, placeCount) : null;
+    const cap = this.maxWidth();
+    this.placeW = fixed ? min : free === null ? null : cap !== null ? Math.min(free, cap) : free;
     const opts = { compact, fixed, summary: this.summary(compact) };
     if (lanes) return this.laneBoard(t, lanes, by, slots, shown, searching, { ...opts, gap, width, stub });
     return h_flex().id("kb-columns").size_full().min_h(0).gap(gap)
