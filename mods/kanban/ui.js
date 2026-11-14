@@ -118,6 +118,17 @@ export function panelButton(t, id, symbolPath, label, on, onClick, tooltip = "",
     .when(menu, (e) => e.gap(iconOnly ? 2 : 5).child(svg(icon("chevron-down")).size(10).flex_none().text_color(on ? t.accent : t.dim)));
 }
 
+/** The arrow half of a split button: opens the menu of the button before it. */
+export function menuArrow(t, id, on, onClick, tooltip = "") {
+  return div().id(id).h(26).px(3).flex_none().flex().items_center().rounded(7).cursor_pointer()
+    .when(Boolean(tooltip), (e) => e.tooltip(tooltip))
+    .when(on, (e) => e.bg(tint(t.accent, "26")))
+    .when(!on, (e) => e.hover((s) => s.bg(t.hover)))
+    .on_mouse_down("left", stop)
+    .on_click((_e, cx) => onClick(cx))
+    .child(svg(icon("chevron-down")).size(10).flex_none().text_color(on ? t.accent : t.dim));
+}
+
 /** An icon of a panel (a path in the Herdr home): `.svg` is tinted with `color`, anything else is a picture. */
 export const panelGlyph = (path, size, color) => String(path).endsWith(".svg")
   ? svg(path).size(size).flex_none().text_color(color) : image(path).size(size).flex_none();
