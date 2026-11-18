@@ -102,15 +102,40 @@ export function scanTranscript(transcript) {
 
 const norm = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 
+/** Steps from `pid` up to the nearest of `targets` through `parents` (pid -> ppid), or -1. */
+function distance(pid, targets, parents) {
+  for (let p = pid, step = 0; p > 1 && step < 64; p = parents.get(p), step++) {
+    if (targets.includes(p)) return step;
+    if (!parents.has(p)) break;
+  }
+  return -1;
+}
+
+/** Reads `ps -A -o pid=,ppid=` output into a Map pid -> ppid. */
+export function parseParents(out) {
+  const parents = new Map();
+  for (const line of String(out ?? "").split("\n")) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    if (Number.isInteger(pid) && Number.isInteger(ppid)) parents.set(pid, ppid);
+  }
+  return parents;
+}
+
 /** The Claude session that runs in a terminal, from the registry of live sessions
  *  ([{ pid, sessionId, cwd, startedAt, root }]) and what `hc get` says of the terminal.
- *  In this order: the process id (exact), the `resume.session` label of the agent-resume mod, then
+ *  In this order: the process id (exact), the nearest descendant of the terminal's processes in `parents`
+ *  (Claude behind a wrapper such as toolbox-exec), the `resume.session` label of the agent-resume mod, then
  *  the folder when only one session started there after the terminal was made.
  *  Returns { sessionId, root, cwd } or null: when unsure, no session (no card moves). */
-export function pickSession(info, registry) {
+export function pickSession(info, registry, parents = null) {
   const pids = [info.pid, info.foreground?.pid, Number(info.labels?.["resume.pid"])].filter((n) => Number.isInteger(n) && n > 0);
   const byPid = registry.find((r) => pids.includes(r.pid));
   if (byPid) return { sessionId: byPid.sessionId, root: byPid.root, cwd: byPid.cwd };
+  if (parents?.size && pids.length) {
+    // Nearest wins: a Claude started from inside the agent's own shell is further down.
+    const near = registry.map((r) => ({ r, d: distance(r.pid, pids, parents) })).filter((x) => x.d > 0).sort((a, b) => a.d - b.d)[0]?.r;
+    if (near) return { sessionId: near.sessionId, root: near.root, cwd: near.cwd };
+  }
   const label = info.labels?.["resume.session"];
   if (typeof label === "string" && /^[0-9a-f-]{20,40}$/i.test(label)) {
     const known = registry.find((r) => r.sessionId === label);
@@ -271,6 +296,12 @@ export class WaitingTracker {
     throw error;
   }
 
+  /** pid -> ppid of the processes on `machine` (null: this computer); empty when `ps` is not there. */
+  async parents(machine, windows) {
+    if (!this.exec || windows) return new Map();
+    try { return parseParents((await this.exec("ps", ["-A", "-o", "pid=,ppid="], { on: machine }))?.stdout); } catch { return new Map(); }
+  }
+
   async remoteRegistry(machine, windows) {
     if (!this.exec) return [];
     return parseRegistry(await this.remote(machine, remoteScripts.registry, windows));
@@ -316,14 +347,14 @@ export class WaitingTracker {
   /** The pending subagents of one agent: [] when none or when unsure. The transcript is read again only when
    *  the agent changed turn since the last read (or `recheck`): a session that did not take a turn did not
    *  start or end a subagent, apart from the time limit, which is applied to the saved answer. */
-  async pending(candidate, roots, registry, now, recheck, machine = null, windows = false) {
+  async pending(candidate, roots, registry, now, recheck, machine = null, windows = false, parents = null) {
     const kept = this.scans.get(candidate.address);
     if (kept && Number.isInteger(kept.turn) && kept.turn === candidate.turn && !recheck) {
       return this.alive(withShellStatus(kept.items, registry, kept.sessionId), now);
     }
     const info = await this.terminalInfo(candidate.address);
     if (!info) return [];
-    const session = pickSession({ ...info, cwd: candidate.cwd ?? info.cwd }, registry);
+    const session = pickSession({ ...info, cwd: candidate.cwd ?? info.cwd }, registry, parents);
     if (!session) return [];
     let items = [];
     if (machine) {
@@ -375,7 +406,8 @@ export class WaitingTracker {
           roots = await this.configRoots();
           registry = await this.registry(roots);
         }
-        const results = await Promise.all(list.map((c) => this.pending(c, roots, registry, now, recheck.has(c.address), machine, windows).catch(() => [])));
+        const parents = await this.parents(machine, windows);
+        const results = await Promise.all(list.map((c) => this.pending(c, roots, registry, now, recheck.has(c.address), machine, windows, parents).catch(() => [])));
         list.forEach((c, i) => found.set(c.address, results[i]));
       }));
       for (const c of candidates) { // in the order of `candidates`, so the comparison below is stable

@@ -40,7 +40,7 @@
         {
           "id": "bar",
           "type": "block",
-          "content": { "mod": "kanban", "props": { "part": "bar" } },
+          "content": { "mod": "kanban", "props": { "part": "bar", "waitingMinutes": 1440 } },
           "size": { "px": 44 },
           "window_drag": true
         },
@@ -53,7 +53,7 @@
             {
               "id": "board",
               "type": "block",
-              "content": { "mod": "kanban", "props": { "part": "board" } },
+              "content": { "mod": "kanban", "props": { "part": "board", "waitingMinutes": 1440 } },
               "min": 160
             },
             {
@@ -63,7 +63,7 @@
                 {
                   "id": "detail-head",
                   "type": "block",
-                  "content": { "mod": "kanban", "props": { "part": "tab-head" } },
+                  "content": { "mod": "kanban", "props": { "part": "tab-head", "waitingMinutes": 1440 } },
                   "size": { "px": 36 }
                 },
                 {
