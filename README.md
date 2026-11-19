@@ -37,7 +37,7 @@ from its folder.
 
 | Part | What it shows |
 | ---- | ------------- |
-| Top bar | Starts with **Filter** (search box and a filter button with a menu: all, the current space, one space, one machine), **Lanes** (3 icon buttons: none, by machine, by space) and the **Agent** button (the tab panel; its arrow picks where it shows); a **Settings** button (the gear icon, opens the gear menu: column width, stack columns, card view, bar icons or names, where panels open, Waiting column, the column chips, Herdr settings, Bar buttons, PowerMods) and **New agent** (opens the New session dialog); then **Panels** (Files, Changes and your dock buttons) and the window buttons. No title and no agent count: the status bar at the bottom shows the count. Drag the window by an empty spot of the bar (left of the gear button). |
+| Top bar | Starts with **Filter** (search box and a filter button with a menu: all, the current space, one space, one machine), **Lanes** (3 icon buttons: none, by machine, by space) and the **Agent** button (the tab panel; its arrow picks where it shows); a **Settings** button (the gear icon, opens the gear menu: column width, stack columns, card view, bar icons or names, where panels open, Waiting column, Link previews, the column chips, Herdr settings, Bar buttons, PowerMods) and **New agent** (opens the New session dialog); then **Panels** (Files, Changes and your dock buttons) and the window buttons. No title and no agent count: the status bar at the bottom shows the count. Drag the window by an empty spot of the bar (left of the gear button). |
 | Columns | Needs you, Working, Waiting, Done, Idle, Terminals, in that order by default. Each has a color, a count, 2 arrow buttons that move it and an eye button that hides it. |
 | Lanes | Off by default. By machine or by space: the column heads once on top, then one lane per machine or space, each a row of the same columns with its cards. A lane head has a chevron that folds the lane, the name, the machine chip of another machine and the card count. |
 | Cards | The program icon and, in large bold text, the **tab name** when a person named the tab (not a number, not the program name), else the agent's terminal title, with the program name under it; then the **space name**, the Git branch, the folder (not when it is the space name), the age, a rename button (a pencil, when [Tab Namer](https://github.com/dougcunha/herdr-mods/tree/main/tab-namer-app) is installed), a duplicate button and a pin. The tab leads because you name tabs after their work, and many cards share one space. Long names shrink to fit (the title from 15 to 11 px over up to 3 lines, the space from 12 to 10.5 px over 2) and are cut with "…" only past that, with the full text in the tooltip. A summary view shows 2 lines only. A right-click on a card (full or summary) opens its menu. |
@@ -124,8 +124,9 @@ from its folder.
 
 | Part | What it is |
 | ---- | ---------- |
-| `layouts/kanban.json` | The window: spaces sidebar (hidden at start), top bar, board plus tab panel and status bar. |
+| `layouts/kanban.json` | The window: spaces sidebar (hidden at start), top bar, board plus tab panel and status bar (with the Link Peek chip). |
 | `layouts/kanban.svg` | The picture for the settings screen. |
+| `mods/link-peek/` | Double-click a link in a terminal to open it in a browser window (terminal-browser), or a card for it. Its own mod, with its own [README](mods/link-peek/README.md): it reads terminals with `hc`, starts the browser with `hc run` and, for the preview card, fetches pages with `curl`. |
 | `mods/kanban/` | One mod with three parts, chosen by `props.part`: `bar`, `board` and `tab-head` (the head of the tab panel). They share state through `shared()`. `waiting.js` finds the agents that wait for subagents, `terminals.js` makes the cards of the tabs with no agent, `lanes.js` sorts the cards into lanes, `filter.js` holds the filter, `density.js` the rules of the Bar and Stack columns settings, `place.js` moves the tab panel to its place, `tree.js` builds the trees of agents. |
 
 Language: the mod shows English. Add `"lang": "pt"` to the `props` of all three
@@ -135,7 +136,7 @@ over the prop, in every bar of the kit, and changes the bar at once. The text
 in the search box changes after a restart.
 
 The gear button of the bar opens a menu. At the top, the look of the board and the bar:
-**Column width** (− / value / +), **Stack columns**, **Cards**, **Bar**, **Panels open in** and **Waiting column**;
+**Column width** (− / value / +), **Stack columns**, **Cards**, **Bar**, **Panels open in**, **Waiting column** and **Link previews** (turns the `link-peek` mod on or off);
 then **Columns**, one chip per column with its card count (a click shows or
 hides the column; the arrows in a column header change the order). These rows
 change the board at once and the menu stays open. At the bottom: **Herdr
@@ -155,7 +156,7 @@ bar reads the same value, so both bars show the same order. A new entry of
 
 ## What it does on your machine
 
-- It reads the live data of Herdr (agents, spaces, panes, terminals and their labels). It stores 18 values in `shared()`: `kanban.hidden`, `kanban.query`, `kanban.filter`, `kanban.group`, `kanban.collapsed`, `kanban.maximized`, `kanban.panelPlace`, `kanban.panelSize`, `kanban.width`, `kanban.order`, `kanban.density`, `kanban.pairs`, `kanban.cards`, `kanban.panelOpen`, `kanban.panelDialog`, `kanban.barButtons`, `kanban.waiting` and `kanban.waiting.dismissed`.
+- It reads the live data of Herdr (agents, spaces, panes, terminals and their labels). It stores 18 values in `shared()`: `kanban.hidden`, `kanban.query`, `kanban.filter`, `kanban.group`, `kanban.collapsed`, `kanban.maximized`, `kanban.panelPlace`, `kanban.panelSize`, `kanban.width`, `kanban.order`, `kanban.density`, `kanban.pairs`, `kanban.cards`, `kanban.panelOpen`, `kanban.panelDialog`, `kanban.barButtons`, `kanban.waiting` and `kanban.waiting.dismissed`. The Link previews row of the gear menu writes `link-peek.enabled`, the switch of the `link-peek` mod.
 - It reads `dock/panels.json` and the folder list of `mods/` in the Herdr home, and watches the `dock/` folder.
 - It edits `layouts/kanban.json` with the `layout.set` command, to add or remove the side-panel blocks of `panels.json`, and once to update the layout of an older version: it removes the shell block (`shell` in `board-main`) and the Terminals view (the stack `view` with `tabs-view`), and turns the agent block `detail` into the tab panel.
 - With the Waiting column on, it reads (never writes) files in your Claude Code folders under your home folder: `sessions/*.json` (with the `status` field: `"shell"` while a background command runs) and the transcript `projects/*/<session>.jsonl` of the Claude agents that show as Done or Idle. It runs `hc get <terminal> --json` for them. It reads a transcript again only when the agent changes turn, and every 30 seconds for an agent known to wait. Nothing leaves your computer.
@@ -163,6 +164,7 @@ bar reads the same value, so both bars show the same order. A new entry of
 - When you duplicate an agent, it runs `hc get <terminal> --json` to read its labels, and opens Herdr's `worktree` dialog for a new worktree.
 - Besides the reads above, it runs Herdr commands only: `agent.focus`, `terminal.pin`, `terminal.peek`, `tab.select`, `tab.rename`, `tab.close`, `space.select`, `pane.focus`, `pane.zoom`, `layout.select`, `layout.show`, `layout.hide`, `layout.toggle`, `layout.resize`, `layout.set`, `tab.new`, `space.new`, `window.*`, `app.settings`, `mod.open`, and the `run` of a command entry of `panels.json`.
 - It runs no program other than `hc`, except for a remote agent: there the Waiting column reads the transcript with `sh` (or PowerShell) on that machine through Herdr. It uses no network of its own.
+- The `link-peek` mod in the status bar does reach the network: for a link you double-click it starts terminal-browser, or runs `curl` for its preview card, on this computer. See [its README](mods/link-peek/README.md#what-it-does-on-your-machine).
 
 ## Limits
 

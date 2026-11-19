@@ -44,6 +44,7 @@ const agentGlyph = (a, t) => (!a.icon ? svg(icon("bot")).size(15).flex_none().te
 const KEY_LANG = "herdr-mods.lang"; // the language of the whole kit, set in the mods-hub; absent: props.lang
 const KEY_HIDDEN = "kanban.hidden"; // ids of the hidden columns
 const KEY_WAITING = "kanban.waiting"; // "on" | "off"; absent: props.waiting (on unless it is false)
+const KEY_LINK_PEEK = "link-peek.enabled"; // the link-peek mod's switch: false is off; absent or true is on
 const KEY_DISMISSED = "kanban.waiting.dismissed"; // { "<terminal>": turn }: cards the person sent back to Done/Idle, for that turn
 const KEY_QUERY = "kanban.query"; // the search text
 const KEY_FILTER = "kanban.filter"; // { kind: "all" | "current" | "space" | "machine", id? } (see filter.js); absent: all
@@ -230,6 +231,8 @@ const STR = {
     waitingOn: "Waiting column on: agents that wait for subagents or background commands get their own column. Click to turn it off.",
     waitingOff: "Waiting column off: those agents show as Done or Idle. Click to turn it on.",
     notWaiting: "Not waiting: show it as Done or Idle",
+    linkPeekOn: "Link previews on: double-click a link in a terminal to preview it. Click to turn them off.",
+    linkPeekOff: "Link previews off. Click to turn them on.",
     agents: (n) => (n === 1 ? "1 agent" : `${n} agents`),
     filterAll: "All", filterCurrent: "Current space", filterSpaces: "Spaces", filterMachines: "Machines",
     filterAllTip: "Showing every agent. Click to choose a space or a machine.",
@@ -266,7 +269,7 @@ const STR = {
     pairsAuto: "{mode}: stacks below {px} px per column",
     cards_auto: "Auto", cards_summary: "Summary", cards_full: "Full",
     cardsAuto: "Auto (summary while the columns are stacked)",
-    widthLabel: "Column width", densityLabel: "Bar", pairsLabel: "Stack columns", cardsLabel: "Cards", waitingLabel: "Waiting column",
+    widthLabel: "Column width", densityLabel: "Bar", pairsLabel: "Stack columns", cardsLabel: "Cards", waitingLabel: "Waiting column", linkPeekLabel: "Link previews",
     columnsTitle: "Columns", orderHint: "The arrows in a column header change the order.",
     opens_auto: "Auto", opens_side: "Side panel", opens_dialog: "Dialog",
     opensNowDialog: "{mode} (dialog now)", opensNowSide: "{mode} (side panel now)",
@@ -296,6 +299,8 @@ const STR = {
     waitingOn: "Coluna Aguardando ligada: agentes que esperam subagentes ou comandos em segundo plano ganham uma coluna própria. Clique para desligar.",
     waitingOff: "Coluna Aguardando desligada: esses agentes aparecem como Concluídos ou Ociosos. Clique para ligar.",
     notWaiting: "Não está esperando: mostrar como Concluído ou Ocioso",
+    linkPeekOn: "Prévia de links ligada: clique duas vezes em um link no terminal para ver a prévia. Clique para desligar.",
+    linkPeekOff: "Prévia de links desligada. Clique para ligar.",
     agents: (n) => (n === 1 ? "1 agente" : `${n} agentes`),
     filterAll: "Todos", filterCurrent: "Espaço atual", filterSpaces: "Espaços", filterMachines: "Máquinas",
     filterAllTip: "Mostrando todos os agentes. Clique para escolher um espaço ou uma máquina.",
@@ -332,7 +337,7 @@ const STR = {
     pairsAuto: "{mode}: empilha abaixo de {px} px por coluna",
     cards_auto: "Auto", cards_summary: "Resumido", cards_full: "Completo",
     cardsAuto: "Auto (resumido enquanto as colunas estão empilhadas)",
-    widthLabel: "Largura da coluna", densityLabel: "Barra", pairsLabel: "Empilhar colunas", cardsLabel: "Cartões", waitingLabel: "Coluna Aguardando",
+    widthLabel: "Largura da coluna", densityLabel: "Barra", pairsLabel: "Empilhar colunas", cardsLabel: "Cartões", waitingLabel: "Coluna Aguardando", linkPeekLabel: "Prévia de links",
     columnsTitle: "Colunas", orderHint: "As setas no cabeçalho de uma coluna mudam a ordem.",
     opens_auto: "Auto", opens_side: "Painel lateral", opens_dialog: "Diálogo",
     opensNowDialog: "{mode} (diálogo agora)", opensNowSide: "{mode} (painel lateral agora)",
@@ -1302,7 +1307,7 @@ export default class Kanban extends View {
     const given = { part: "gear-menu", lang: this.lang, waiting: this.props.waiting, bar: this.barLook(),
       narrow: typeof this.barW === "number" && this.barW < PANEL_NARROW, counts: this.columnCounts() };
     // Room for every column, so the menu still fits after the Waiting column is turned on.
-    const height = (hub) => MENU_PAD * 2 + 2 * MENU_HEAD + 5 * GEAR_ROW + (1 + COLUMNS.length + (hub ? 3 : 2)) * MENU_ROW + GEAR_HINT + GEAR_SEP;
+    const height = (hub) => MENU_PAD * 2 + 2 * MENU_HEAD + 5 * GEAR_ROW + (2 + COLUMNS.length + (hub ? 3 : 2)) * MENU_ROW + GEAR_HINT + GEAR_SEP;
     const open = (hub) => openOverlay({ mod: "kanban", kind: "popup", width: GEAR_W, height: height(hub), props: { ...given, hub } });
     readTextFile(`${appHome()}/mods/mods-hub/mod.json`).then((text) => open(text != null), () => open(false));
   }
@@ -1380,7 +1385,7 @@ export default class Kanban extends View {
     const stacked = boardNow().stacks;
     const pairs = this.s(stacked == null ? "pairsAuto" : stacked ? "pairsNowOn" : "pairsNowOff", { mode: this.s("pairs_auto"), px: COLUMN_WIDE });
     const opens = this.s(p.narrow ? "opensNowDialog" : "opensNowSide", { mode: this.s("opens_auto") });
-    const waiting = this.waitingOn();
+    const waiting = this.waitingOn(), linkPeek = shared(KEY_LINK_PEEK) !== false;
     const chip = (it) => h_flex().w_full().h(MENU_ROW).pl(6).flex_none().items_center()
       .child(columnChip(t, `kb-chip-${it.c.id}`, { label: it.name, color: statusColor(t, it.c.id), on: it.on, count: it.count, tooltip: it.tooltip }, it.flip));
     return v_flex().id("kb-gear-root").w_full().p(MENU_PAD)
@@ -1396,6 +1401,12 @@ export default class Kanban extends View {
         .child(svg(icon("hourglass")).size(15).flex_none().text_color(waiting ? t.accent : t.muted))
         .child(div().flex_1().min_w(0).truncate().child(this.s("waitingLabel")))
         .when(waiting, (e) => e.child(svg(icon("tick")).size(13).flex_none().text_color(t.accent))))
+      .child(h_flex().id("kb-gear-link-peek").w_full().h(MENU_ROW).px(10).gap(10).flex_none().items_center().rounded(6).cursor_pointer()
+        .text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover)).tooltip(this.s(linkPeek ? "linkPeekOn" : "linkPeekOff"))
+        .on_click((_e, cx) => { cx.stop_propagation(); setShared(KEY_LINK_PEEK, !linkPeek); })
+        .child(svg(icon("eye")).size(15).flex_none().text_color(linkPeek ? t.accent : t.muted))
+        .child(div().flex_1().min_w(0).truncate().child(this.s("linkPeekLabel")))
+        .when(linkPeek, (e) => e.child(svg(icon("tick")).size(13).flex_none().text_color(t.accent))))
       .child(head(this.s("columnsTitle")))
       .children(this.columnToggles(p.counts).map(chip))
       .child(h_flex().w_full().h(GEAR_HINT).px(10).flex_none().items_center()

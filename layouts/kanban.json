@@ -121,9 +121,13 @@
         },
         {
           "id": "status",
-          "type": "block",
-          "content": { "mod": "workspace-status" },
-          "size": { "px": 28 }
+          "type": "row",
+          "size": { "px": 28 },
+          "resizable": false,
+          "children": [
+            { "id": "status-bar", "type": "block", "content": { "mod": "workspace-status" } },
+            { "id": "link-peek", "type": "block", "content": { "mod": "link-peek" }, "size": { "px": 72 } }
+          ]
         }
       ],
       "resizable": false
