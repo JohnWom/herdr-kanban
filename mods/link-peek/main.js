@@ -43,7 +43,10 @@ const ASK = {
   remote: ["On another machine", (m) => `This address points at ${m}. The browser runs on this computer and can't reach it.`],
   listed: ["Not loaded on its own", () => "Link Peek loads nothing from the sites in your askHosts list and never sends them your sign-in."],
   ask: ["Open a preview?", () => "Link Peek loads nothing until you ask.", "Open preview shows the page in a browser window."],
+  system: ["Opens in your browser", () => "This site is set to open in your system browser."],
 };
+// The "ask" card when it offers no Open preview.
+const QUIET = ["Not loaded on its own", () => "Link Peek loads nothing on its own."];
 const FAILED = ["The browser did not start", () => "Open the link in your browser instead."];
 
 export default class LinkPeek extends View {
@@ -156,7 +159,7 @@ export default class LinkPeek extends View {
 
   body(t, s) {
     if (this.p.mode === "ask") {
-      const [head, text, offer] = this.failed ? FAILED : ASK[this.p.why] ?? ASK.private;
+      const [head, text, offer] = this.failed ? FAILED : this.p.why === "ask" && !this.canPreview() ? QUIET : ASK[this.p.why] ?? ASK.private;
       const said = text(this.p.machine ?? "") + (offer && this.canPreview() ? ` ${offer}` : "");
       return v_flex().h(BODY_H).gap(4).overflow_hidden()
         .child(div().text_size(14).font_semibold().text_color(this.failed ? t.blocked : t.foreground).child(head))

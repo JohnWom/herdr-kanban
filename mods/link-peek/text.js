@@ -208,22 +208,36 @@ export function cookieRule(config, host) {
   return rules.find((r) => Array.isArray(r?.hosts) && typeof r.file === "string" && r.hosts.some((p) => hostMatches(p, host))) ?? null;
 }
 
+const inList = (list, host) => Array.isArray(list) && list.some((p) => hostMatches(p, host));
+
 /** Whether `host` matches a pattern of the local config's `askHosts`. */
 export function askHost(config, host) {
-  return Array.isArray(config?.askHosts) && config.askHosts.some((p) => hostMatches(p, host));
+  return inList(config?.askHosts, host);
+}
+
+/** Whether `host` matches a pattern of the local config's `systemBrowserHosts`. */
+export function systemHost(config, host) {
+  return inList(config?.systemBrowserHosts, host);
 }
 
 /**
  * How a link opens: `window` (the browser at once), `ask` (a card that loads nothing, `why`: signin, private, remote,
- * listed or ask; `preview: false` when it offers no browser window) or `preview` (the fetched card). `browser` is the
- * browser command or null; `machine` the link's terminal's.
+ * system, listed or ask; `preview: false` when it offers no browser window) or `preview` (the fetched card). `browser`
+ * is the browser command or null; `machine` the link's terminal's.
  */
 export function linkMode(url, config, { browser = null, machine = null } = {}) {
   const host = hostOf(url);
   const ask = config?.browser === "ask";
-  if (!ask && (!browser || config?.browser === "card")) return askHost(config, host) ? { mode: "ask", why: "listed", preview: false } : { mode: "preview" };
+  const local = isPrivateHost(host);
+  // A private host keeps its own handling: the preview card refuses it, the browser modes give it the private or remote card.
+  const system = !local && systemHost(config, host) ? { mode: "ask", why: "system", preview: false } : null;
+  if (!ask && (!browser || config?.browser === "card")) {
+    if (system) return system;
+    return askHost(config, host) ? { mode: "ask", why: "listed", preview: false } : { mode: "preview" };
+  }
   const card = (why) => (browser ? { mode: "ask", why } : { mode: "ask", why, preview: false });
-  if (isPrivateHost(host)) return card(machine ? "remote" : "private");
+  if (local) return card(machine ? "remote" : "private");
+  if (system) return system;
   if (cookieRule(config, host)) return card("signin");
   if (askHost(config, host)) return card("listed");
   if (ask) return card("ask");

@@ -14,6 +14,10 @@ Some links get a small card at the pointer instead, and Link Peek loads nothing 
   `.internal`, `.lan`, `.home.arpa`, `.localdomain`, `.corp`, `.intranet`, and loopback,
   link-local, private-network and CGNAT (`100.64.0.0/10`, Tailscale) IPs.
 
+A host in `systemBrowserHosts` (below) gets that card too, with **Open in browser** (your own
+browser) as its main button and no **Open preview**: for sites that only work in a managed
+browser, such as a device check terminal-browser can't pass.
+
 With `"browser": "ask"`, every link gets that card and nothing opens on its own; without
 terminal-browser the card has no **Open preview** and still loads nothing.
 
@@ -25,6 +29,20 @@ link gets the preview card instead: the page's title, description, site name and
 HTTP status and the final URL after redirects, with **Open in browser**, **Copy URL**,
 **Close** and **Retry** when the page did not load. A host in `askHosts` still gets the
 card that loads nothing, then without **Open preview**.
+
+The first row that matches the link's host decides:
+
+| Host | terminal-browser | `"browser": "ask"` | `"browser": "card"`, or no terminal-browser |
+|------|------------------|--------------------|---------------------------------------------|
+| a private address | card (from another machine: "On another machine") | card, as on the left | preview card: "Private address: not loaded" |
+| in `systemBrowserHosts` | card, **Open in browser** only | card, **Open in browser** only | card, **Open in browser** only |
+| in a cookie rule | card | card | preview card, with the rule's cookies |
+| in `askHosts` | card | card | card |
+| any other | browser window | card | preview card |
+
+"Card" is the card that loads nothing; it offers **Open preview** only when terminal-browser
+is found, never for another machine's private address. In the last column `askHosts` comes
+before the private-address and cookie-rule rows.
 
 ## Using it
 
@@ -58,6 +76,7 @@ repository:
   "browser": "terminal-browser",
   "browserCommand": "~/.local/bin/terminal-browser",
   "askHosts": ["files.example.net", "*.files.example.net"],
+  "systemBrowserHosts": ["app.example.com"],
   "cookies": [
     { "hosts": ["*.example.com", "example.com"], "file": "~/.example/cookie", "negotiate": false,
       "hint": "Sign in with example-login, then Retry." }
@@ -76,6 +95,10 @@ repository:
   the card that loads nothing and that never get cookies or Kerberos, not even as a
   redirect hop of a cookie rule's preview. For sites where anyone can host content, or
   whose links carry their own access.
+- `systemBrowserHosts` (optional): hosts, written like a cookie rule's `hosts`, whose links
+  get the card with **Open in browser** as its main button: never the browser window, the
+  preview or a fetch. For sites that only work in a managed browser; a site that works in
+  terminal-browser after a normal sign-in doesn't need it. A private address keeps its card.
 - `cookies` (optional): the sites you keep sign-in cookies for. In browser mode their
   links get the card that loads nothing; the browser has its own sign-in. The rest of
   this list is for the preview card.

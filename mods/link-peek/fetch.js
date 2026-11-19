@@ -28,7 +28,7 @@ function remember(map, key, value) {
   if (map.size > CACHE_MAX) map.delete(map.keys().next().value);
 }
 
-/** The person's local config (never in the repo): `{ cookies: [{ hosts, file, negotiate?, hint? }], askHosts?, signinHosts?, signinHint?, timeoutSeconds? }`. */
+/** The person's local config (never in the repo): `{ cookies: [{ hosts, file, negotiate?, hint? }], askHosts?, systemBrowserHosts?, signinHosts?, signinHint?, timeoutSeconds? }`. */
 export async function loadConfig() {
   const text = await readTextFile(`${appHome()}/${CONFIG_FILE}`).catch(() => null);
   if (!text) return {};
